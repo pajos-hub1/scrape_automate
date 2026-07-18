@@ -1,0 +1,7 @@
+selenium>=4.20
+webdriver-manager>=4.0
+beautifulsoup4>=4.12
+lxml>=5.0
+pandas>=2.2
+numpy>=1.26
+openpyxl>=3.1
