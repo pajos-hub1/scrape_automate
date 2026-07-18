@@ -4,23 +4,38 @@ duplicate rows.
 """
 from datetime import datetime, timezone
 
+from config import ROUNDS_PER_SEASON
+
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def get_or_create_season(conn, fingerprint, status, round_count):
+def _status_for_round_count(round_count):
+    return "previous" if round_count >= ROUNDS_PER_SEASON else "current"
+
+
+def get_or_create_season(conn, fingerprint, round_count):
     """Look up a season by its fingerprint (stable identity, see
-    scraper/fingerprint.py). Create it if new, otherwise refresh its
-    status/last_seen/round_count. Returns season_id.
+    scraper/fingerprint.py). Create it if new, otherwise refresh
+    last_seen/round_count/status. Returns season_id.
+
+    Status is derived from the best round_count ever observed for this
+    fingerprint, never from a single pass in isolation -- a carousel walk
+    that gets cut short (flaky click, slow animation) must not be able to
+    demote a season that's already been confirmed complete back to
+    'current'. round_count itself never regresses for the same reason.
+    'archived' is handled separately in run.py, once a season stops
+    appearing in a scrape at all.
     """
     ts = now_iso()
     row = conn.execute(
-        "SELECT season_id, round_count FROM seasons WHERE fingerprint = ?",
+        "SELECT season_id, round_count, status FROM seasons WHERE fingerprint = ?",
         (fingerprint,),
     ).fetchone()
 
     if row is None:
+        status = _status_for_round_count(round_count)
         cur = conn.execute(
             """INSERT INTO seasons (fingerprint, status, first_seen, last_seen, round_count)
                VALUES (?, ?, ?, ?, ?)""",
@@ -29,14 +44,37 @@ def get_or_create_season(conn, fingerprint, status, round_count):
         return cur.lastrowid
 
     season_id = row["season_id"]
-    # Never let round_count regress (a stale/partial scrape shouldn't erase progress).
-    new_round_count = max(round_count, row["round_count"])
+    effective_round_count = max(round_count, row["round_count"])
+    status = row["status"] if row["status"] == "archived" else _status_for_round_count(effective_round_count)
     conn.execute(
         """UPDATE seasons SET status = ?, last_seen = ?, round_count = ?
            WHERE season_id = ?""",
-        (status, ts, new_round_count, season_id),
+        (status, ts, effective_round_count, season_id),
     )
     return season_id
+
+
+def archive_missing_seasons(conn, touched_season_ids):
+    """Only two seasons are ever visible on the site at once. Any season
+    we'd previously seen (status current/previous) that this run's scrape
+    didn't touch at all has dropped off the site -- preserve it as
+    'archived' rather than leaving a stale 'current'/'previous' label.
+    Returns the list of season_ids just archived.
+    """
+    placeholders = ",".join("?" for _ in touched_season_ids) or "NULL"
+    rows = conn.execute(
+        f"""SELECT season_id FROM seasons
+            WHERE status IN ('current', 'previous')
+              AND season_id NOT IN ({placeholders})""",
+        touched_season_ids,
+    ).fetchall()
+    archived = [r["season_id"] for r in rows]
+    if archived:
+        conn.executemany(
+            "UPDATE seasons SET status = 'archived' WHERE season_id = ?",
+            [(sid,) for sid in archived],
+        )
+    return archived
 
 
 def upsert_matches(conn, season_id, matches):
@@ -75,9 +113,10 @@ def make_fixture_key(round_number, match_number, team_a, team_b):
 
 
 def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, kickoff_time=None):
-    """Returns fixture_id. Idempotent on fixture_key (round/match/teams) --
-    season_id may be resolved later than the fixture itself is first seen,
-    so a second scrape can attach it without creating a duplicate row.
+    """Returns (fixture_id, was_new). Idempotent on fixture_key
+    (round/match/teams) -- season_id may be resolved later than the
+    fixture itself is first seen, so a second scrape can attach it without
+    creating a duplicate row.
     """
     ts = now_iso()
     key = make_fixture_key(round_number, match_number, team_a, team_b)
@@ -94,7 +133,7 @@ def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (season_id, round_number, match_number, team_a, team_b, kickoff_time, ts, key),
         )
-        return cur.lastrowid
+        return cur.lastrowid, True
 
     fixture_id = row["fixture_id"]
     conn.execute(
@@ -103,7 +142,7 @@ def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, 
            WHERE fixture_id = ?""",
         (season_id, kickoff_time, ts, fixture_id),
     )
-    return fixture_id
+    return fixture_id, False
 
 
 def insert_odds(conn, fixture_id, market, selection, price, implied_prob):

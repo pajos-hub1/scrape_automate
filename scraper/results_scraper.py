@@ -119,24 +119,31 @@ def _find_active_table(driver):
 
 
 def _scrape_table(table):
+    """Team names and scores are NOT both present in the same <tr> in this
+    markup (per-row pairing finds zero matches) -- as in the original
+    notebook, collect each flat across the whole table and pair
+    positionally in twos instead.
+    """
     rows = table.find_elements(By.TAG_NAME, "tr")
     html_rows = [r.get_attribute("outerHTML") for r in rows]
     soup = BeautifulSoup("\n".join(html_rows), "html.parser")
 
+    team_spans = soup.find_all("span", class_="tbl-team-name")
+    score_cells = soup.find_all("td", class_="txt-y")
+
+    teams = [team_spans[i:i + 2] for i in range(0, len(team_spans), 2)]
+    scores = [score_cells[i:i + 2] for i in range(0, len(score_cells), 2)]
+
     matches = []
-    match_number = 0
-    for tr in soup.find_all("tr"):
-        team_spans = tr.find_all("span", class_="tbl-team-name")
-        score_cells = tr.find_all("td", class_="txt-y")
-        if len(team_spans) < 2 or len(score_cells) < 2:
+    for match_number, (t_pair, s_pair) in enumerate(zip(teams, scores), start=1):
+        if len(t_pair) < 2 or len(s_pair) < 2:
             continue
-        match_number += 1
-        ft_a, ft_b = parse_score(score_cells[0].get_text(strip=True))
-        ht_a, ht_b = parse_score(score_cells[1].get_text(strip=True))
+        ft_a, ft_b = parse_score(s_pair[0].get_text(strip=True))
+        ht_a, ht_b = parse_score(s_pair[1].get_text(strip=True))
         matches.append({
             "match_number": match_number,
-            "team_a": team_spans[0].get_text(strip=True),
-            "team_b": team_spans[1].get_text(strip=True),
+            "team_a": t_pair[0].get_text(strip=True),
+            "team_b": t_pair[1].get_text(strip=True),
             "ft_a": ft_a, "ft_b": ft_b,
             "ht_a": ht_a, "ht_b": ht_b,
         })
@@ -181,19 +188,27 @@ def walk_carousel(driver, max_rounds=ROUNDS_PER_SEASON + 2):
             else:
                 print(f"   Round {round_no}: table found but no rows parsed")
 
-        try:
-            next_btn = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, NEXT_BUTTON_SELECTOR))
-            )
-            _real_click(driver, next_btn)
-        except Exception as e:
-            print(f"   Could not click next: {e}")
-            break
+        advanced = False
+        for attempt in range(2):
+            try:
+                next_btn = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, NEXT_BUTTON_SELECTOR))
+                )
+                _real_click(driver, next_btn)
+            except Exception as e:
+                print(f"   Could not click next (attempt {attempt + 1}): {e}")
+                continue
 
-        try:
-            WebDriverWait(driver, 10).until(lambda d: _label_text_changed(d, round_no))
-        except Exception:
-            time.sleep(2)
+            try:
+                WebDriverWait(driver, 10).until(lambda d: _label_text_changed(d, round_no))
+                advanced = True
+                break
+            except Exception:
+                print(f"   Round label didn't change after next-click (attempt {attempt + 1}), retrying")
+
+        if not advanced:
+            print("   Giving up advancing the carousel -- this pass may be incomplete")
+            break
         time.sleep(0.3)  # let the translateX transition settle
 
     return rounds
