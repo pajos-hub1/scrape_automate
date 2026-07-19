@@ -10,10 +10,19 @@ from db.upsert import (
     upsert_fixture,
     upsert_matches,
 )
+from features.build import build_features
+from predict.baseline import BaselinePredictor
+from predict.build import build_predictions
 from scraper.driver import build_driver
 from scraper.fingerprint import compute_fingerprint
 from scraper.fixtures_scraper import scrape_fixtures_odds
 from scraper.results_scraper import scrape_results
+from track.reconcile import reconcile
+from track.report import print_report
+
+PREDICTORS = {
+    "baseline": BaselinePredictor,
+}
 
 
 def cmd_scrape(args):
@@ -129,6 +138,33 @@ def cmd_scrape(args):
         driver.quit()
 
 
+def cmd_features(args):
+    with get_connection() as conn:
+        summary = build_features(conn)
+    print("=== Feature engineering summary ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
+def cmd_predict(args):
+    predictor = PREDICTORS[args.model]()
+    with get_connection() as conn:
+        summary = build_predictions(conn, predictor)
+    print(f"=== Prediction summary (model={predictor.model_version}) ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
+def cmd_track(args):
+    with get_connection() as conn:
+        summary = reconcile(conn)
+        print("=== Reconciliation summary ===")
+        for k, v in summary.items():
+            print(f"  {k}: {v}")
+        print()
+        print_report(conn)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Zoom prediction pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -136,6 +172,16 @@ def main():
     scrape_p = sub.add_parser("scrape", help="Scrape results + fixtures/odds into SQLite")
     scrape_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
     scrape_p.set_defaults(func=cmd_scrape)
+
+    features_p = sub.add_parser("features", help="Build leakage-safe features for all seasons")
+    features_p.set_defaults(func=cmd_features)
+
+    predict_p = sub.add_parser("predict", help="Predict the earliest unplayed round")
+    predict_p.add_argument("--model", choices=list(PREDICTORS), default="baseline")
+    predict_p.set_defaults(func=cmd_predict)
+
+    track_p = sub.add_parser("track", help="Reconcile predictions vs actuals and report accuracy")
+    track_p.set_defaults(func=cmd_track)
 
     args = parser.parse_args()
     args.func(args)

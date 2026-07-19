@@ -2,6 +2,7 @@
 repeatedly with the same data -- re-running a scrape must never create
 duplicate rows.
 """
+import json
 from datetime import datetime, timezone
 
 from config import ROUNDS_PER_SEASON
@@ -168,3 +169,89 @@ def insert_odds(conn, fixture_id, market, selection, price, implied_prob):
         (fixture_id, market, selection, price, implied_prob, ts),
     )
     return True
+
+
+FEATURE_COLUMNS = [
+    "match_ref", "fixture_ref", "season_id", "round_number", "team_a", "team_b",
+    "a_form_games", "a_form_pts", "a_form_wins", "a_form_draws", "a_form_losses", "a_form_gf", "a_form_ga",
+    "b_form_games", "b_form_pts", "b_form_wins", "b_form_draws", "b_form_losses", "b_form_gf", "b_form_ga",
+    "h2h_games", "h2h_a_wins", "h2h_b_wins", "h2h_draws", "h2h_avg_goals",
+    "a_home_played", "a_home_wins", "a_home_draws", "a_home_losses", "a_home_gf", "a_home_ga",
+    "b_away_played", "b_away_wins", "b_away_draws", "b_away_losses", "b_away_gf", "b_away_ga",
+    "a_season_pts_rate", "a_season_gf_avg", "a_season_ga_avg",
+    "b_season_pts_rate", "b_season_gf_avg", "b_season_ga_avg",
+    "odds_home_prob", "odds_draw_prob", "odds_away_prob", "odds_over25_prob", "odds_under25_prob",
+    "odds_btts_yes_prob", "odds_btts_no_prob",
+]
+
+
+def upsert_feature(conn, row):
+    """row: dict with a subset of FEATURE_COLUMNS keys (missing keys ->
+    NULL). Exactly one of match_ref/fixture_ref must be set -- that's the
+    natural key this upserts on (both carry a UNIQUE constraint in the
+    schema), matching whichever one this row represents.
+    """
+    full_row = {c: row.get(c) for c in FEATURE_COLUMNS}
+    full_row["computed_at"] = now_iso()
+
+    conflict_col = "match_ref" if full_row["match_ref"] is not None else "fixture_ref"
+    if full_row[conflict_col] is None:
+        raise ValueError("upsert_feature requires match_ref or fixture_ref to be set")
+
+    cols = list(full_row.keys())
+    col_list = ",".join(cols)
+    placeholders = ",".join("?" for _ in cols)
+    update_clause = ",".join(f"{c}=excluded.{c}" for c in cols if c != conflict_col)
+
+    conn.execute(
+        f"""INSERT INTO features ({col_list}) VALUES ({placeholders})
+            ON CONFLICT({conflict_col}) DO UPDATE SET {update_clause}""",
+        [full_row[c] for c in cols],
+    )
+
+
+def upsert_prediction(conn, fixture_ref, model_version, market, label, probabilities, confidence):
+    """Idempotent on (fixture_ref, model_version, market) -- re-running the
+    same model against the same fixture updates the prediction in place
+    rather than accumulating stale duplicates.
+    """
+    conn.execute(
+        """INSERT INTO predictions
+           (fixture_ref, model_version, market, label, probabilities, confidence, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(fixture_ref, model_version, market) DO UPDATE SET
+               label = excluded.label,
+               probabilities = excluded.probabilities,
+               confidence = excluded.confidence,
+               created_at = excluded.created_at""",
+        (fixture_ref, model_version, market, label, json.dumps(probabilities), confidence, now_iso()),
+    )
+
+
+def upsert_prediction_result(conn, prediction_id, match_ref, market, predicted_label, actual_label,
+                              baseline_label, odds_implied_label):
+    """Idempotent on prediction_id (UNIQUE in the schema) -- reconciling the
+    same prediction twice updates in place rather than duplicating.
+    """
+    correct = int(predicted_label == actual_label)
+    baseline_correct = int(baseline_label == actual_label) if baseline_label is not None else None
+    odds_implied_correct = int(odds_implied_label == actual_label) if odds_implied_label is not None else None
+
+    conn.execute(
+        """INSERT INTO prediction_results
+           (prediction_id, match_ref, market, predicted_label, actual_label, correct,
+            baseline_label, baseline_correct, odds_implied_label, odds_implied_correct, reconciled_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(prediction_id) DO UPDATE SET
+               match_ref = excluded.match_ref,
+               predicted_label = excluded.predicted_label,
+               actual_label = excluded.actual_label,
+               correct = excluded.correct,
+               baseline_label = excluded.baseline_label,
+               baseline_correct = excluded.baseline_correct,
+               odds_implied_label = excluded.odds_implied_label,
+               odds_implied_correct = excluded.odds_implied_correct,
+               reconciled_at = excluded.reconciled_at""",
+        (prediction_id, match_ref, market, predicted_label, actual_label, correct,
+         baseline_label, baseline_correct, odds_implied_label, odds_implied_correct, now_iso()),
+    )
