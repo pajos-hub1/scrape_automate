@@ -25,8 +25,18 @@ def get_meta(conn):
 
 
 def get_upcoming_predictions(conn):
-    """Predictions with no prediction_results row yet -- i.e. still pending
-    kickoff, grouped one entry per fixture with all its markets attached."""
+    """Predictions with no prediction_results row yet, restricted to the
+    MOST RECENT predict() batch (max round_number among pending fixtures).
+
+    Reconciliation matches a prediction to its result by team pairing, not
+    by our guessed round_number (see track/reconcile.py) -- a pairing only
+    clears once it actually gets played, which can take more than one real
+    round if the guess was off. That means older batches can still be
+    sitting here unreconciled by the time a newer predict() run adds a
+    fresh batch on top. Showing all of them at once looks like duplicate/
+    doubled fixtures (the same team appearing twice against different
+    opponents); the dashboard should only ever show the latest one.
+    """
     rows = conn.execute(
         """SELECT p.fixture_ref, f.team_a, f.team_b, f.round_number, f.kickoff_time,
                   p.market, p.label, p.confidence
@@ -34,6 +44,13 @@ def get_upcoming_predictions(conn):
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
            WHERE pr.result_id IS NULL
+             AND f.round_number = (
+                 SELECT MAX(f2.round_number)
+                 FROM predictions p2
+                 JOIN fixtures f2 ON f2.fixture_id = p2.fixture_ref
+                 LEFT JOIN prediction_results pr2 ON pr2.prediction_id = p2.prediction_id
+                 WHERE pr2.result_id IS NULL
+             )
            ORDER BY f.match_number, p.market"""
     ).fetchall()
 
