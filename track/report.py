@@ -4,7 +4,7 @@ the "prove or disprove edge, never assume it works" check from the brief.
 from collections import defaultdict
 
 
-def _accuracy_stats(conn):
+def accuracy_stats(conn):
     rows = conn.execute(
         "SELECT market, correct, baseline_correct, odds_implied_correct FROM prediction_results"
     ).fetchall()
@@ -25,7 +25,7 @@ def _accuracy_stats(conn):
     return stats
 
 
-def _verdict(model_acc, ref_acc, ref_name):
+def verdict(model_acc, ref_acc, ref_name):
     if ref_acc is None:
         return None
     if model_acc > ref_acc:
@@ -36,7 +36,7 @@ def _verdict(model_acc, ref_acc, ref_name):
 
 
 def print_report(conn):
-    stats = _accuracy_stats(conn)
+    stats = accuracy_stats(conn)
     if not stats:
         print("No reconciled predictions yet -- nothing to report.")
         return
@@ -50,8 +50,8 @@ def print_report(conn):
         baseline_acc = s["baseline_correct"] / s["baseline_n"] if s["baseline_n"] else None
         odds_acc = s["odds_correct"] / s["odds_n"] if s["odds_n"] else None
 
-        verdicts = [v for v in [_verdict(model_acc, baseline_acc, "baseline"),
-                                 _verdict(model_acc, odds_acc, "odds")] if v]
+        verdicts = [v for v in [verdict(model_acc, baseline_acc, "baseline"),
+                                 verdict(model_acc, odds_acc, "odds")] if v]
 
         baseline_str = f"{baseline_acc * 100:8.1f}%" if baseline_acc is not None else "     n/a"
         odds_str = f"{odds_acc * 100:6.1f}%" if odds_acc is not None else "   n/a"

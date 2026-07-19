@@ -2,7 +2,6 @@
 ./env
 __pycache__/
 *.pyc
-data/*.db
 data/*.db-journal
 .DS_Store
 *.egg-info/

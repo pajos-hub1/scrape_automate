@@ -19,6 +19,7 @@ from scraper.fixtures_scraper import scrape_fixtures_odds
 from scraper.results_scraper import scrape_results
 from track.reconcile import reconcile
 from track.report import print_report
+from dashboard.build import build_dashboard
 
 PREDICTORS = {
     "baseline": BaselinePredictor,
@@ -165,6 +166,26 @@ def cmd_track(args):
         print_report(conn)
 
 
+def cmd_dashboard(args):
+    with get_connection() as conn:
+        path = build_dashboard(conn)
+    print(f"=== Dashboard written to {path} ===")
+
+
+def cmd_cycle(args):
+    """The full loop: scrape -> features -> predict -> track -> dashboard.
+    What the scheduled GitHub Actions run calls every ~90 minutes."""
+    cmd_scrape(args)
+    print()
+    cmd_features(args)
+    print()
+    cmd_predict(args)
+    print()
+    cmd_track(args)
+    print()
+    cmd_dashboard(args)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Zoom prediction pipeline")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -182,6 +203,14 @@ def main():
 
     track_p = sub.add_parser("track", help="Reconcile predictions vs actuals and report accuracy")
     track_p.set_defaults(func=cmd_track)
+
+    dashboard_p = sub.add_parser("dashboard", help="Regenerate the static dashboard HTML")
+    dashboard_p.set_defaults(func=cmd_dashboard)
+
+    cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> dashboard")
+    cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
+    cycle_p.add_argument("--model", choices=list(PREDICTORS), default="baseline")
+    cycle_p.set_defaults(func=cmd_cycle)
 
     args = parser.parse_args()
     args.func(args)
