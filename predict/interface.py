@@ -10,6 +10,14 @@ from abc import ABC, abstractmethod
 class Predictor(ABC):
     model_version: str
 
+    def __init__(self, conn):
+        """conn: an open DB connection, handed to every predictor at
+        construction time whether it needs it or not -- a model that
+        trains itself (see predict/ml_model.py) uses it to pull historical
+        matches; a model that doesn't (see predict/baseline.py) just
+        ignores it. Keeps run.py's instantiation uniform across both.
+        """
+
     @abstractmethod
     def predict_markets(self, features_row: dict) -> dict:
         """features_row: one row from the `features` table, as a dict.

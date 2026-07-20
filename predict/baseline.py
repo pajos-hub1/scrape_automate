@@ -24,30 +24,14 @@ HT_OU1.5:     half-time goals aren't separately feature-engineered (Stage 2
               since it's the most balanced split in that same data
               (65% under / 35% over), unlike the lopsided 0.5 line.
 """
+from predict.common import market_result as _market
+from predict.common import normalize as _normalize
 from predict.interface import Predictor
 from predict.poisson import poisson_over_under, result_probs_from_grid, score_grid, top_scorelines
 
 HOME_BASE, DRAW_BASE, AWAY_BASE = 0.42, 0.34, 0.24  # historical base rates, from the project brief
 DEFAULT_GOALS_AVG = 1.3  # fallback when a side has no played matches yet this season
 HT_FT_GOAL_RATIO = 0.5  # measured from this project's scraped data, see module docstring
-
-
-def _normalize(probs: dict) -> dict:
-    total = sum(probs.values())
-    if total <= 0:
-        n = len(probs)
-        return {k: 1 / n for k in probs}
-    return {k: v / total for k, v in probs.items()}
-
-
-def _label_and_confidence(probs: dict):
-    label = max(probs, key=probs.get)
-    return label, probs[label]
-
-
-def _market(probs: dict) -> dict:
-    label, confidence = _label_and_confidence(probs)
-    return {"label": label, "probabilities": probs, "confidence": confidence}
 
 
 class BaselinePredictor(Predictor):

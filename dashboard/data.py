@@ -4,6 +4,8 @@ without needing to touch markup.
 """
 from datetime import datetime, timezone
 
+from track.report import accuracy_stats, list_model_versions
+
 
 def get_meta(conn):
     seasons = conn.execute(
@@ -26,7 +28,8 @@ def get_meta(conn):
 
 def get_upcoming_predictions(conn):
     """Predictions with no prediction_results row yet, restricted to the
-    MOST RECENT predict() batch (max round_number among pending fixtures).
+    MOST RECENT predict() batch (max round_number among pending fixtures),
+    across every model currently making live predictions.
 
     Reconciliation matches a prediction to its result by team pairing, not
     by our guessed round_number (see track/reconcile.py) -- a pairing only
@@ -39,7 +42,7 @@ def get_upcoming_predictions(conn):
     """
     rows = conn.execute(
         """SELECT p.fixture_ref, f.team_a, f.team_b, f.round_number, f.kickoff_time,
-                  p.market, p.label, p.confidence
+                  p.model_version, p.market, p.label, p.confidence
            FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
@@ -51,7 +54,7 @@ def get_upcoming_predictions(conn):
                  LEFT JOIN prediction_results pr2 ON pr2.prediction_id = p2.prediction_id
                  WHERE pr2.result_id IS NULL
              )
-           ORDER BY f.match_number, p.market"""
+           ORDER BY f.match_number, p.market, p.model_version"""
     ).fetchall()
 
     fixtures = {}
@@ -61,7 +64,9 @@ def get_upcoming_predictions(conn):
             "round_number": r["round_number"], "kickoff_time": r["kickoff_time"],
             "markets": {},
         })
-        fx["markets"][r["market"]] = {"label": r["label"], "confidence": r["confidence"]}
+        fx["markets"].setdefault(r["market"], {})[r["model_version"]] = {
+            "label": r["label"], "confidence": r["confidence"],
+        }
     return list(fixtures.values())
 
 
@@ -69,7 +74,8 @@ def get_latest_reconciled_round(conn):
     """Full predicted-vs-actual detail for the most recently reconciled
     round, keyed by the REAL round_number (matches.round_number via
     match_ref) -- not the fixture's guessed round_number, which can be off
-    by one (see track/reconcile.py)."""
+    by one (see track/reconcile.py). Each market cell carries every live
+    model's prediction separately."""
     latest = conn.execute(
         """SELECT m.round_number FROM prediction_results pr
            JOIN matches m ON m.match_id = pr.match_ref
@@ -81,13 +87,13 @@ def get_latest_reconciled_round(conn):
 
     rows = conn.execute(
         """SELECT f.team_a, f.team_b, m.ft_a, m.ft_b, m.ht_a, m.ht_b,
-                  pr.market, pr.predicted_label, pr.actual_label, pr.correct
+                  p.model_version, pr.market, pr.predicted_label, pr.actual_label, pr.correct
            FROM prediction_results pr
            JOIN predictions p ON p.prediction_id = pr.prediction_id
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            JOIN matches m ON m.match_id = pr.match_ref
            WHERE m.round_number = ?
-           ORDER BY f.team_a, pr.market""",
+           ORDER BY f.team_a, pr.market, p.model_version""",
         (round_number,),
     ).fetchall()
 
@@ -99,18 +105,30 @@ def get_latest_reconciled_round(conn):
             "ft_a": r["ft_a"], "ft_b": r["ft_b"], "ht_a": r["ht_a"], "ht_b": r["ht_b"],
             "markets": {},
         })
-        m["markets"][r["market"]] = {
+        m["markets"].setdefault(r["market"], {})[r["model_version"]] = {
             "predicted": r["predicted_label"], "actual": r["actual_label"],
             "correct": bool(r["correct"]),
         }
     return {"round_number": round_number, "matches": list(matches.values())}
 
 
-def get_accuracy_trend(conn):
-    """Overall (all-markets-blended) accuracy per actual round, chronological."""
-    rows = conn.execute(
-        """SELECT m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
-           FROM prediction_results pr JOIN matches m ON m.match_id = pr.match_ref
-           GROUP BY m.round_number ORDER BY m.round_number"""
-    ).fetchall()
+def get_accuracy_trend(conn, model_version=None):
+    """Overall (all-markets-blended) accuracy per actual round,
+    chronological. model_version=None blends every live model together."""
+    query = """SELECT m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
+               FROM prediction_results pr
+               JOIN matches m ON m.match_id = pr.match_ref"""
+    params = ()
+    if model_version is not None:
+        query += " JOIN predictions p ON p.prediction_id = pr.prediction_id WHERE p.model_version = ?"
+        params = (model_version,)
+    query += " GROUP BY m.round_number ORDER BY m.round_number"
+    rows = conn.execute(query, params).fetchall()
     return [{"round_number": r["round_number"], "n": r["n"], "accuracy": r["correct"] / r["n"]} for r in rows]
+
+
+def get_models_and_stats(conn):
+    """{model_version: accuracy_stats(...)} for every model with live
+    predictions -- the per-model comparison the dashboard's accuracy
+    section renders one chart per model from."""
+    return {m: accuracy_stats(conn, model_version=m) for m in list_model_versions(conn)}

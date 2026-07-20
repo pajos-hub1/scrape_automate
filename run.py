@@ -11,8 +11,10 @@ from db.upsert import (
     upsert_matches,
 )
 from features.build import build_features
+from predict.backtest import print_backtest, run_backtest
 from predict.baseline import BaselinePredictor
 from predict.build import build_predictions
+from predict.ml_model import MLPredictor
 from scraper.driver import build_driver
 from scraper.fingerprint import compute_fingerprint
 from scraper.fixtures_scraper import scrape_fixtures_odds
@@ -23,6 +25,7 @@ from dashboard.build import build_dashboard
 
 PREDICTORS = {
     "baseline": BaselinePredictor,
+    "ml_v1": MLPredictor,
 }
 
 
@@ -148,12 +151,14 @@ def cmd_features(args):
 
 
 def cmd_predict(args):
-    predictor = PREDICTORS[args.model]()
     with get_connection() as conn:
-        summary = build_predictions(conn, predictor)
-    print(f"=== Prediction summary (model={predictor.model_version}) ===")
-    for k, v in summary.items():
-        print(f"  {k}: {v}")
+        for name in args.model:
+            predictor = PREDICTORS[name](conn)
+            summary = build_predictions(conn, predictor)
+            print(f"=== Prediction summary (model={predictor.model_version}) ===")
+            for k, v in summary.items():
+                print(f"  {k}: {v}")
+            print()
 
 
 def cmd_track(args):
@@ -164,6 +169,12 @@ def cmd_track(args):
             print(f"  {k}: {v}")
         print()
         print_report(conn)
+
+
+def cmd_backtest(args):
+    with get_connection() as conn:
+        results = run_backtest(conn)
+    print_backtest(results)
 
 
 def cmd_dashboard(args):
@@ -198,18 +209,21 @@ def main():
     features_p.set_defaults(func=cmd_features)
 
     predict_p = sub.add_parser("predict", help="Predict the earliest unplayed round")
-    predict_p.add_argument("--model", choices=list(PREDICTORS), default="baseline")
+    predict_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=list(PREDICTORS))
     predict_p.set_defaults(func=cmd_predict)
 
     track_p = sub.add_parser("track", help="Reconcile predictions vs actuals and report accuracy")
     track_p.set_defaults(func=cmd_track)
+
+    backtest_p = sub.add_parser("backtest", help="Cross-validated backtest of ml_v1 vs dumb baselines")
+    backtest_p.set_defaults(func=cmd_backtest)
 
     dashboard_p = sub.add_parser("dashboard", help="Regenerate the static dashboard HTML")
     dashboard_p.set_defaults(func=cmd_dashboard)
 
     cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> dashboard")
     cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
-    cycle_p.add_argument("--model", choices=list(PREDICTORS), default="baseline")
+    cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=list(PREDICTORS))
     cycle_p.set_defaults(func=cmd_cycle)
 
     args = parser.parse_args()

@@ -7,12 +7,23 @@ from pathlib import Path
 
 from config import BASE_DIR, ROUNDS_PER_SEASON
 from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
-from dashboard.data import get_accuracy_trend, get_latest_reconciled_round, get_meta, get_upcoming_predictions
+from dashboard.data import (
+    get_accuracy_trend,
+    get_latest_reconciled_round,
+    get_meta,
+    get_models_and_stats,
+    get_upcoming_predictions,
+)
 from track.report import accuracy_stats, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
 
 MARKET_ORDER = ["1X2", "BTTS", "OU2.5", "CorrectScore", "HT_1X2", "HT_OU1.5"]
+MODEL_SHORT = {"baseline_v0": "Base", "ml_v1": "ML"}
+
+
+def _model_tag(model_version):
+    return MODEL_SHORT.get(model_version, model_version)
 
 
 def _stat_tile(label, value, sub=None):
@@ -37,7 +48,8 @@ def _render_overall_tile(stats):
     if overall_n == 0:
         return _stat_tile("Overall accuracy", "n/a", "no reconciled predictions yet")
     acc = overall_correct / overall_n
-    return _stat_tile("Overall accuracy", f"{acc * 100:.1f}%", f"{overall_correct}/{overall_n} predictions, all markets blended")
+    return _stat_tile("Overall accuracy", f"{acc * 100:.1f}%",
+                       f"{overall_correct}/{overall_n} predictions, all markets AND models blended")
 
 
 MARKET_LABELS = {
@@ -55,12 +67,16 @@ def _render_upcoming(fixtures):
     for fx in fixtures:
         cells = []
         for m in MARKET_ORDER:
-            entry = fx["markets"].get(m)
-            if entry is None:
+            by_model = fx["markets"].get(m)
+            if not by_model:
                 cells.append("<td>&mdash;</td>")
-            else:
-                cells.append(f'<td>{html.escape(entry["label"])} '
-                              f'<span class="conf">{entry["confidence"] * 100:.0f}%</span></td>')
+                continue
+            lines = [
+                f'<div class="model-pred"><span class="model-tag">{_model_tag(mv)}</span> '
+                f'{html.escape(e["label"])} <span class="conf">{e["confidence"] * 100:.0f}%</span></div>'
+                for mv, e in sorted(by_model.items())
+            ]
+            cells.append(f'<td>{"".join(lines)}</td>')
         rows.append(
             f'<tr><td class="teams">{html.escape(fx["team_a"])} <span class="vs">vs</span> '
             f'{html.escape(fx["team_b"])}</td>{"".join(cells)}</tr>'
@@ -83,14 +99,18 @@ def _render_latest_round(latest):
     for m in latest["matches"]:
         cells = []
         for market in MARKET_ORDER:
-            entry = m["markets"].get(market)
-            if entry is None:
+            by_model = m["markets"].get(market)
+            if not by_model:
                 cells.append("<td>&mdash;</td>")
-            else:
-                mark = "&#10003;" if entry["correct"] else "&#10007;"
-                cls = "hit" if entry["correct"] else "miss"
-                cells.append(f'<td class="{cls}">{mark} {html.escape(entry["predicted"])} '
-                              f'<span class="conf">actual {html.escape(entry["actual"])}</span></td>')
+                continue
+            actual = next(iter(by_model.values()))["actual"]
+            lines = [f'<div class="model-pred-actual">actual: {html.escape(actual)}</div>']
+            for mv, e in sorted(by_model.items()):
+                mark = "&#10003;" if e["correct"] else "&#10007;"
+                cls = "hit" if e["correct"] else "miss"
+                lines.append(f'<div class="model-pred {cls}"><span class="model-tag">{_model_tag(mv)}</span> '
+                              f'{mark} {html.escape(e["predicted"])}</div>')
+            cells.append(f'<td>{"".join(lines)}</td>')
         score = f'{m["ft_a"]}-{m["ft_b"]}' + (f' (HT {m["ht_a"]}-{m["ht_b"]})' if m["ht_a"] is not None else "")
         rows.append(
             f'<tr><td class="teams">{html.escape(m["team_a"])} <span class="vs">vs</span> '
@@ -117,6 +137,24 @@ def _render_verdict_summary(stats):
         if vs:
             lines.append(f'<li><strong>{MARKET_LABELS[market]}</strong>: {", ".join(vs)}</li>')
     return f'<ul class="verdicts">{"".join(lines)}</ul>' if lines else ""
+
+
+def _render_model_accuracy_sections(models_and_stats):
+    """One chart + verdict list per live model, instead of blending them
+    together into one misleading 'model' column."""
+    if not models_and_stats:
+        return '<p class="empty">No reconciled predictions yet.</p>'
+
+    parts = []
+    for model_version in sorted(models_and_stats):
+        stats = models_and_stats[model_version]
+        parts.append(f'<h3>{html.escape(model_version)}</h3>')
+        if not stats:
+            parts.append('<p class="empty">No reconciled predictions yet for this model.</p>')
+            continue
+        parts.append(market_accuracy_chart(stats))
+        parts.append(_render_verdict_summary(stats))
+    return "".join(parts)
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -187,6 +225,14 @@ td.teams {{ font-weight: 500; }}
 .conf {{ color: var(--text-muted); font-size: 0.78rem; }}
 td.hit {{ color: var(--good); }}
 td.miss {{ color: var(--bad); }}
+.model-pred {{ margin-bottom: 2px; }}
+.model-pred.hit {{ color: var(--good); }}
+.model-pred.miss {{ color: var(--bad); }}
+.model-pred-actual {{ color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 3px; }}
+.model-tag {{ display: inline-block; min-width: 32px; color: var(--text-muted); font-size: 0.72rem;
+  font-weight: 600; text-transform: uppercase; }}
+section h3 {{ font-size: 0.9rem; margin: 16px 0 8px; color: var(--text-secondary); }}
+section h3:first-of-type {{ margin-top: 0; }}
 .chart {{ width: 100%; height: auto; }}
 .gridline {{ stroke: var(--gridline); stroke-width: 1; }}
 .axis-line {{ stroke: var(--axis); stroke-width: 1; }}
@@ -229,24 +275,29 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
-  <h2>Accuracy by market: model vs baseline vs odds-implied</h2>
-  {market_chart_html}
-  {verdict_html}
+  <h2>Accuracy by market: each live model vs baseline vs odds-implied</h2>
+  {model_accuracy_html}
 </section>
 
 <section>
-  <h2>Accuracy trend across rounds</h2>
+  <h2>Accuracy trend across rounds (all models blended)</h2>
   {trend_chart_html}
 </section>
 
 <footer>
-  <p><strong>Reading this dashboard:</strong> "Model" is <code>baseline_v0</code> -- a placeholder using
-  bookmaker odds where scraped (1X2, BTTS) and a Poisson goal-expectation model elsewhere (O/U 2.5,
-  Correct Score, HT markets), not a trained model. "Baseline" is a dumb non-model reference (always-Home
-  for 1X2, most-common outcome so far for everything else). "Odds-implied" only applies to 1X2/BTTS --
-  Over/Under odds were never successfully scraped (a known gap from the results scraper build), so that
-  column is n/a elsewhere. Small sample sizes (single-digit rounds) make any of these percentages noisy;
-  treat them as directional until many more rounds have been reconciled.</p>
+  <p><strong>Reading this dashboard:</strong> two models run live in parallel and get tracked
+  independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
+  BTTS) and a Poisson goal-expectation model elsewhere (O/U 2.5, Correct Score, HT markets) -- not a
+  trained model. <code>ml_v1</code> is a real logistic-regression (1X2, BTTS) + Poisson-regression
+  (goals) model, trained only on team form/H2H/season-rate stats -- deliberately NOT on odds, so
+  "beats odds" stays a meaningful comparison rather than a circular one. A 5-fold cross-validated
+  backtest (540 historical matches) showed ml_v1 modestly beating dumb baselines on 1X2 and HT_1X2, but
+  actually losing to them on OU2.5 and CorrectScore -- it is not yet clearly better than the placeholder
+  overall, hence running both live rather than replacing one with the other. "Baseline" (the reference
+  column, not baseline_v0 the model) is a dumb non-model reference: always-Home for 1X2, most-common
+  outcome so far for everything else. "Odds-implied" only applies to 1X2/BTTS -- Over/Under odds were
+  never successfully scraped (a known gap from the results scraper build). Small sample sizes make any
+  of these percentages noisy; treat them as directional until many more rounds have been reconciled.</p>
   <p>Round numbers on the "upcoming predictions" table are the pipeline's own best-guess inference
   (last played round + 1), made against a fixtures page that carries no round label at all -- it can be
   off by one in practice. Reconciliation itself does not depend on this number (matches are found by
@@ -273,7 +324,8 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
-    stats = accuracy_stats(conn)
+    stats = accuracy_stats(conn)  # blended across models -- used only for the headline "Overall" tile
+    models_and_stats = get_models_and_stats(conn)
     upcoming = get_upcoming_predictions(conn)
     latest_round = get_latest_reconciled_round(conn)
     trend = get_accuracy_trend(conn)
@@ -284,8 +336,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         overall_tile=_render_overall_tile(stats),
         upcoming_html=_render_upcoming(upcoming),
         latest_round_html=_render_latest_round(latest_round),
-        market_chart_html=market_accuracy_chart(stats),
-        verdict_html=_render_verdict_summary(stats),
+        model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
         trend_chart_html=accuracy_trend_chart(trend),
     )
 
