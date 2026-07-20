@@ -1,8 +1,8 @@
 name: Zoom prediction cycle
 
-# GitHub Actions cron can't express "every 90 minutes" as a single field
-# (minute values only go 0-59). Two schedules 90 minutes apart give the
-# same effect: 00:00, 01:30, 03:00, 04:30, ... every 90 minutes, all day.
+# Every hour on the hour -- tightened from 90 minutes to be safer relative
+# to how long a round actually takes (~90 min), leaving more margin against
+# schedule drift or a skipped run.
 #
 # NOTE: GitHub's scheduled triggers are best-effort and can slip by minutes
 # to (rarely) tens of minutes under load -- not a hard real-time guarantee.
@@ -13,8 +13,7 @@ name: Zoom prediction cycle
 # below lets you trigger a catch-up run by hand at any time.
 on:
   schedule:
-    - cron: "0 0,3,6,9,12,15,18,21 * * *"
-    - cron: "30 1,4,7,10,13,16,19,22 * * *"
+    - cron: "0 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -42,7 +41,20 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run full cycle (scrape -> features -> predict -> track -> dashboard)
-        run: python run.py cycle
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== Attempt $attempt/3 ==="
+            if python run.py cycle; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed."
+            if [ "$attempt" -lt 3 ]; then
+              echo "Retrying in 30s..."
+              sleep 30
+            fi
+          done
+          echo "All 3 attempts failed."
+          exit 1
 
       - name: Commit and push updated DB + dashboard
         run: |

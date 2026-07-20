@@ -8,17 +8,13 @@ and avoids a whole class of incremental-update bugs.
 """
 import pandas as pd
 
+from db.queries import get_current_fixture_batch
 from db.upsert import upsert_feature
 from features.engineer import build_season_features
 
 MATCH_QUERY = """
     SELECT match_id, round_number, match_number, team_a, team_b, ft_a, ft_b
     FROM matches WHERE season_id = ?
-    ORDER BY round_number, match_number
-"""
-FIXTURE_QUERY = """
-    SELECT fixture_id, round_number, match_number, team_a, team_b
-    FROM fixtures WHERE season_id = ? AND round_number > ?
     ORDER BY round_number, match_number
 """
 
@@ -73,23 +69,28 @@ def build_features(conn):
         fixtures = None
         if status == "current":
             # fixtures accumulates every fixture ever scraped (by design, for
-            # idempotency) -- once its round is played, it's superseded by real
-            # match data at that same round_number, so only rounds strictly
-            # after the latest played one are still genuinely upcoming.
-            max_played_round = int(matches["round_number"].max())
-            fx = pd.read_sql_query(FIXTURE_QUERY, conn, params=(season_id, max_played_round))
-            fixtures = fx if not fx.empty else None
+            # idempotency) -- get_current_fixture_batch picks out just the
+            # single freshest poll's batch (see db/queries.py for why
+            # fixture_id-recency, not round_number, is what identifies it).
+            batch = get_current_fixture_batch(conn, season_id)
+            current_ids = [r["fixture_id"] for r in batch]
+            if batch:
+                fixtures = pd.DataFrame(batch)[["fixture_id", "round_number", "match_number", "team_a", "team_b"]]
 
-            # Prune feature rows left over from fixtures whose round has since
-            # been played -- otherwise they'd sit in `features` forever with
-            # fixture_ref still set, and predict/build.py's "earliest unplayed
-            # round" query would keep finding them.
-            conn.execute(
-                """DELETE FROM features WHERE fixture_ref IN (
-                       SELECT fixture_id FROM fixtures WHERE season_id = ? AND round_number <= ?
-                   )""",
-                (season_id, max_played_round),
-            )
+            # Prune feature rows for any fixture that's no longer the current
+            # batch -- covers both "round has since been played" AND "this
+            # exact pairing was superseded by a fresher poll before it ever
+            # got played" -- otherwise stale rows sit in `features` forever
+            # with fixture_ref still set, and predict/build.py's "earliest
+            # unplayed round" query would keep finding them alongside the
+            # real current batch.
+            all_ids = [r["fixture_id"] for r in conn.execute(
+                "SELECT fixture_id FROM fixtures WHERE season_id = ?", (season_id,)
+            )]
+            stale_ids = [fid for fid in all_ids if fid not in current_ids]
+            if stale_ids:
+                placeholders = ",".join("?" for _ in stale_ids)
+                conn.execute(f"DELETE FROM features WHERE fixture_ref IN ({placeholders})", stale_ids)
 
         feat = build_season_features(matches, fixture_rows=fixtures)
 
