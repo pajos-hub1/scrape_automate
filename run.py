@@ -7,6 +7,7 @@ from db.upsert import (
     archive_missing_seasons,
     get_or_create_season,
     insert_odds,
+    now_iso,
     upsert_fixture,
     upsert_matches,
 )
@@ -111,6 +112,11 @@ def cmd_scrape(args):
             print("\n=== Scraping upcoming fixtures + odds (Premier-Zoom) ===")
             fixtures_raw = scrape_fixtures_odds(driver)
             next_round_number = current_season_max_round + 1
+            # One shared timestamp for this whole batch -- see upsert_fixture's
+            # docstring: every fixture from this poll must carry the identical
+            # scraped_at so db/queries.get_current_fixture_batch can tell this
+            # poll apart from an older, superseded one.
+            scrape_ts = now_iso()
 
             for i, f in enumerate(fixtures_raw, start=1):
                 summary["fixtures_seen"] += 1
@@ -122,6 +128,7 @@ def cmd_scrape(args):
                     team_a=f["team_a"],
                     team_b=f["team_b"],
                     kickoff_time=f["kickoff_time"],
+                    scraped_at=scrape_ts,
                 )
                 if was_new:
                     summary["fixtures_new"] += 1

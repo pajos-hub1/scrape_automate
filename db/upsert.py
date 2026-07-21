@@ -113,13 +113,21 @@ def make_fixture_key(round_number, match_number, team_a, team_b):
     return f"{round_number}:{match_number}:{team_a}:{team_b}"
 
 
-def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, kickoff_time=None):
+def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, kickoff_time=None, scraped_at=None):
     """Returns (fixture_id, was_new). Idempotent on fixture_key
     (round/match/teams) -- season_id may be resolved later than the
     fixture itself is first seen, so a second scrape can attach it without
     creating a duplicate row.
+
+    scraped_at should be computed ONCE by the caller and passed in the same
+    for every fixture in one scrape's batch (see run.py cmd_scrape) --
+    db/queries.get_current_fixture_batch relies on every fixture from one
+    poll sharing an identical scraped_at to tell "this poll's batch" apart
+    from an older, superseded one that happens to include some of the same
+    reused rows. Computing it fresh per-call here would let genuinely
+    same-poll fixtures drift apart by however long the upsert loop takes.
     """
-    ts = now_iso()
+    ts = scraped_at or now_iso()
     key = make_fixture_key(round_number, match_number, team_a, team_b)
 
     row = conn.execute(
