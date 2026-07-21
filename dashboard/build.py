@@ -52,14 +52,21 @@ MARKET_LABELS = {
 }
 
 
+PENDING_NOTES = {
+    "upcoming": "Upcoming -- best-guess round numbering, see note below",
+    "pending": ("Pending -- superseded by a newer batch before this round was confirmed played; "
+                "outcome not yet known, will fill in once reconciled"),
+}
+
+
 def _render_round_panel(entry, index, total):
-    """One round's table -- either the upcoming (unreconciled) batch or a
-    reconciled round's predicted-vs-actual detail -- wrapped in a hidden-
+    """One round's table -- an unreconciled batch (upcoming or pending) or
+    a reconciled round's predicted-vs-actual detail -- wrapped in a hidden-
     by-default div the round-browser JS toggles visibility on."""
     header_cells = "".join(f"<th>{MARKET_LABELS[m]}</th>" for m in MARKET_ORDER)
-    is_upcoming = entry.get("is_upcoming", False)
+    status = entry.get("status", "reconciled")
 
-    if is_upcoming:
+    if status in ("upcoming", "pending"):
         rows = []
         for fx in entry["fixtures"]:
             cells = []
@@ -79,11 +86,11 @@ def _render_round_panel(entry, index, total):
                 f'{html.escape(fx["team_b"])}</td>{"".join(cells)}</tr>'
             )
         body = (
-            '<p class="section-note">Upcoming -- best-guess round numbering, see note below</p>'
+            f'<p class="section-note">{PENDING_NOTES[status]}</p>'
             f'<div class="table-scroll"><table><thead><tr><th>Fixture</th>{header_cells}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div>'
         )
-        label = f'Round {entry["round_number"]} (upcoming)'
+        label = f'Round {entry["round_number"]} ({status})'
     else:
         rows = []
         for m in entry["matches"]:
@@ -122,7 +129,7 @@ def _render_round_browser(history):
 
     panels = "".join(_render_round_panel(entry, i, len(history)) for i, entry in enumerate(history))
     last = history[-1]
-    default_label = f'Round {last["round_number"]} (' + ("upcoming" if last.get("is_upcoming") else "reconciled") + ")"
+    default_label = f'Round {last["round_number"]} ({last.get("status", "reconciled")})'
 
     nav = (
         '<div class="round-nav">'
