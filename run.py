@@ -2,6 +2,7 @@
 import argparse
 import sys
 
+from config import ROUNDS_PER_SEASON
 from db.connection import get_connection
 from db.upsert import (
     archive_missing_seasons,
@@ -19,7 +20,7 @@ from predict.ml_model import MLPredictor
 from scraper.driver import build_driver
 from scraper.fingerprint import compute_fingerprint
 from scraper.fixtures_scraper import scrape_fixtures_odds
-from scraper.results_scraper import scrape_results
+from scraper.results_scraper import scrape_live_round, scrape_results
 from track.reconcile import reconcile
 from track.report import print_report
 from dashboard.build import build_dashboard
@@ -92,6 +93,10 @@ def cmd_scrape(args):
                         summary["new_rounds"] += 1
                         summary["new_matches"] += inserted
 
+            live_round = scrape_live_round(driver)
+            if live_round is not None:
+                print(f"   Live round right now: {live_round}")
+
             archived = archive_missing_seasons(conn, touched_season_ids)
             summary["seasons_archived"] = len(archived)
             if archived:
@@ -109,9 +114,31 @@ def cmd_scrape(args):
                 ).fetchone()
             current_season_max_round = (max_round_row["mr"] if max_round_row and max_round_row["mr"] else 0)
 
+            # Prefer the live round straight from the site over our own
+            # inference -- it's ground truth (scrape_live_round), not a
+            # guess, and correctly handles the season-boundary case where
+            # our recorded history hasn't caught up yet.
+            if live_round is not None and live_round >= ROUNDS_PER_SEASON:
+                # Live round is the season finale -- whatever the fixtures
+                # page shows next is a NEW season's Round 1. We can't attach
+                # a season_id to it yet: that season won't exist in our DB
+                # until its own Round 1 finishes and gets fingerprinted.
+                # Leaving season_id unset (None) is the honest state --
+                # track/reconcile.py's cross-season fallback finds it later
+                # once the new season is known.
+                next_round_number = 1
+                fixtures_season_id = None
+                print(f"   Live round {live_round} is the season finale -- next fixtures "
+                      f"are a new season's Round 1 (season_id unresolved for now)")
+            elif live_round is not None:
+                next_round_number = live_round + 1
+                fixtures_season_id = current_season_id
+            else:
+                next_round_number = current_season_max_round + 1
+                fixtures_season_id = current_season_id
+
             print("\n=== Scraping upcoming fixtures + odds (Premier-Zoom) ===")
             fixtures_raw = scrape_fixtures_odds(driver)
-            next_round_number = current_season_max_round + 1
             # One shared timestamp for this whole batch -- see upsert_fixture's
             # docstring: every fixture from this poll must carry the identical
             # scraped_at so db/queries.get_current_fixture_batch can tell this
@@ -122,7 +149,7 @@ def cmd_scrape(args):
                 summary["fixtures_seen"] += 1
                 fixture_id, was_new = upsert_fixture(
                     conn,
-                    season_id=current_season_id,
+                    season_id=fixtures_season_id,
                     round_number=next_round_number,
                     match_number=i,
                     team_a=f["team_a"],

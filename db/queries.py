@@ -35,18 +35,74 @@ def get_current_fixture_batch(conn, season_id, batch_size=MATCHES_PER_ROUND):
     A stale/superseded batch just silently stops being selected -- nothing
     needs deleting, no migration -- so this also self-heals whatever stale
     batches are already sitting in the DB from before this was fixed.
+
+    season_id may be None: at a season boundary, run.py's cmd_scrape can
+    detect (via the Live Score page's round number) that the fixtures page
+    has already rolled over to a NEW season's Round 1, before that season
+    exists in our DB at all -- it only gets created once its own Round 1
+    finishes and gets fingerprinted. Such fixtures are stored with
+    season_id left unset rather than wrongly tagged to the old season.
+    Passing season_id=None here looks up exactly that orphaned batch;
+    passing a real season_id looks up its own upcoming batch OR an
+    orphaned one, since at any moment there's only ever one genuine
+    current batch, tagged or not.
     """
-    max_played_row = conn.execute(
-        "SELECT MAX(round_number) AS mr FROM matches WHERE season_id = ?", (season_id,)
-    ).fetchone()
-    max_played_round = max_played_row["mr"] or 0
+    if season_id is not None:
+        max_played_row = conn.execute(
+            "SELECT MAX(round_number) AS mr FROM matches WHERE season_id = ?", (season_id,)
+        ).fetchone()
+        max_played_round = max_played_row["mr"] or 0
+        where_clause = "(season_id = ? AND round_number > ?) OR season_id IS NULL"
+        params = (season_id, max_played_round)
+    else:
+        where_clause = "season_id IS NULL"
+        params = ()
 
     rows = conn.execute(
-        """SELECT fixture_id, round_number, match_number, team_a, team_b, kickoff_time
-           FROM fixtures
-           WHERE season_id = ? AND round_number > ?
-           ORDER BY scraped_at DESC, fixture_id DESC
-           LIMIT ?""",
-        (season_id, max_played_round, batch_size),
+        f"""SELECT fixture_id, round_number, match_number, team_a, team_b, kickoff_time
+            FROM fixtures
+            WHERE {where_clause}
+            ORDER BY scraped_at DESC, fixture_id DESC
+            LIMIT ?""",
+        (*params, batch_size),
     ).fetchall()
     return sorted((dict(r) for r in rows), key=lambda r: r["match_number"])
+
+
+ODDS_FIELD_MAP = {
+    ("1X2", "Home"): "odds_home_prob",
+    ("1X2", "Draw"): "odds_draw_prob",
+    ("1X2", "Away"): "odds_away_prob",
+    ("BTTS", "Yes"): "odds_btts_yes_prob",
+    ("BTTS", "No"): "odds_btts_no_prob",
+    ("OU2.5", "Over"): "odds_over25_prob",
+    ("OU2.5", "Under"): "odds_under25_prob",
+}
+
+
+def get_latest_odds_by_fixture(conn, fixture_ids):
+    """{fixture_id: {(market, selection): implied_prob}} using each
+    fixture's most recently captured odds. Shared by features/build.py
+    (persisted features) and predict/build.py (the orphan-batch path,
+    which predicts directly without a features row -- see its docstring).
+    """
+    if not fixture_ids:
+        return {}
+    placeholders = ",".join("?" for _ in fixture_ids)
+    rows = conn.execute(
+        f"""SELECT o.fixture_id, o.market, o.selection, o.implied_prob
+            FROM odds o
+            JOIN (
+                SELECT fixture_id, market, selection, MAX(captured_at) AS latest
+                FROM odds WHERE fixture_id IN ({placeholders})
+                GROUP BY fixture_id, market, selection
+            ) latest_o
+            ON o.fixture_id = latest_o.fixture_id AND o.market = latest_o.market
+               AND o.selection = latest_o.selection AND o.captured_at = latest_o.latest""",
+        fixture_ids,
+    ).fetchall()
+
+    odds_map = {}
+    for r in rows:
+        odds_map.setdefault(r["fixture_id"], {})[(r["market"], r["selection"])] = r["implied_prob"]
+    return odds_map

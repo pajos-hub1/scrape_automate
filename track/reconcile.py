@@ -99,16 +99,62 @@ def odds_implied_label(odds_map, market):
     return max(vals, key=vals.get)
 
 
+def _find_match(conn, cache, season_id, team_a, team_b):
+    key = (season_id, team_a, team_b)
+    if key not in cache:
+        m = conn.execute(
+            """SELECT match_id, ft_a, ft_b, ht_a, ht_b FROM matches
+               WHERE season_id = ? AND team_a = ? AND team_b = ?""",
+            key,
+        ).fetchone()
+        cache[key] = dict(m) if m else None
+    return cache[key]
+
+
+def _find_match_across_seasons(conn, cache, season_id, team_a, team_b, fixture_scraped_at):
+    """Matches on team pairing, NOT round_number -- a fixture's round_number
+    is our own inference made at scrape time against a page with no round
+    label at all, and can be wrong. team pairing is reliable: under a double
+    round-robin, a given (team_a, team_b) ordering occurs at most once per
+    season.
+
+    season_id itself can ALSO be wrong or unknown: if the site was mid
+    season-transition at scrape time (the previous round still finishing up
+    while the fixtures page had already rolled over to a new season's Round
+    1), the fixture may have been tagged with the old season's id, or left
+    untagged (None) if we detected the boundary but hadn't fingerprinted the
+    new season yet. Either way, the fix is the same: if the originally
+    tagged season doesn't have this pairing, check any season that first
+    appeared AFTER this fixture was scraped (oldest first) -- never
+    backward in time, so this can't accidentally match an unrelated old
+    occurrence of the same pairing from some earlier season.
+    """
+    if season_id is not None:
+        match = _find_match(conn, cache, season_id, team_a, team_b)
+        if match is not None:
+            return match
+
+    newer_seasons = conn.execute(
+        "SELECT season_id FROM seasons WHERE first_seen > ? ORDER BY first_seen ASC",
+        (fixture_scraped_at,),
+    ).fetchall()
+    for s in newer_seasons:
+        if s["season_id"] == season_id:
+            continue
+        match = _find_match(conn, cache, s["season_id"], team_a, team_b)
+        if match is not None:
+            return match
+
+    return None
+
+
 def reconcile(conn):
     """Finds every prediction without a prediction_results row yet, checks
-    whether its fixture has since been played (matched by
-    season_id/round_number/team_a/team_b -- NOT match_number, which the
-    fixtures page and results page assign independently and aren't
-    guaranteed to agree on), and reconciles it if so.
+    whether its fixture has since been played, and reconciles it if so.
     """
     pending = conn.execute(
         """SELECT p.prediction_id, p.fixture_ref, p.market, p.label AS predicted_label,
-                  f.season_id, f.round_number, f.team_a, f.team_b
+                  f.season_id, f.round_number, f.team_a, f.team_b, f.scraped_at
            FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
@@ -123,22 +169,9 @@ def reconcile(conn):
     reconciled = still_pending = 0
 
     for row in pending:
-        # Matched on (season_id, team_a, team_b) only -- NOT round_number.
-        # A fixture's round_number is our own inference (last-played-round + 1)
-        # made at scrape time against a page that has no round label at all;
-        # it can be off by one in practice (e.g. the odds page can already be
-        # showing the round *after* next once betting closes on the imminent
-        # one). Team pairing is the reliable key: under a double round-robin,
-        # a given (team_a, team_b) ordering occurs at most once per season.
-        key = (row["season_id"], row["team_a"], row["team_b"])
-        if key not in match_cache:
-            m = conn.execute(
-                """SELECT match_id, round_number, ft_a, ft_b, ht_a, ht_b FROM matches
-                   WHERE season_id = ? AND team_a = ? AND team_b = ?""",
-                key,
-            ).fetchone()
-            match_cache[key] = dict(m) if m else None
-        match = match_cache[key]
+        match = _find_match_across_seasons(
+            conn, match_cache, row["season_id"], row["team_a"], row["team_b"], row["scraped_at"]
+        )
 
         if match is None or match["ft_a"] is None:
             still_pending += 1

@@ -21,6 +21,14 @@ results page, verified 2026-07-18):
   This was verified by walking three consecutive rounds and confirming
   the tx≈0 table's DOM index changes each time while its content always
   matches the current round label.
+- The "LIVE SCORE" nav tab (same click-dispatch caveat) is the ONE place
+  on the site that states a round number outright: its header
+  (span.league-info__name) reads like "Premier-Zoom - 21-07-2026 01:20:00
+  Round 1". Everything else (fixtures/odds page, results carousel) has to
+  be inferred; this is ground truth, used to compute the fixtures page's
+  round number as live_round + 1 instead of guessing from our own
+  last-played-round count, which drifts around season boundaries (see
+  scrape_live_round's docstring).
 """
 import re
 import time
@@ -38,6 +46,7 @@ NEXT_BUTTON_SELECTOR = ".carousel__control-right"
 TABLE_SELECTOR = "table.l-table.mt10"
 NAV_ITEM_SELECTOR = "a.top-nav__list-item"
 SWITCH_BTN_SELECTOR = "div.switch__btn"
+LIVE_ROUND_SELECTOR = "span.league-info__name"
 
 SCORE_RE = re.compile(r"(\d+)\s*-\s*(\d+)")
 TRANSLATE_RE = re.compile(r"translate\(\s*([-\d.]+)px")
@@ -227,6 +236,47 @@ def _switch_season(driver, want_text):
     _real_click(driver, target)
     time.sleep(1.5)
     return True
+
+
+def scrape_live_round(driver):
+    """Reads the round number directly from the Live Score tab's header --
+    the one place on the site that states a round number outright, instead
+    of us having to infer one. Ground truth for computing what round the
+    fixtures/odds page's currently-open batch belongs to (live_round + 1),
+    replacing the old last-played-round + 1 guess, which drifts wrong
+    exactly at season boundaries: results only record a round once it
+    finishes, but the fixtures page can already be showing odds for the
+    round after the one currently live, so a guess based purely on our own
+    recorded history lags behind by an unpredictable amount right when a
+    season is about to roll over (confirmed live: a fixtures-page preview
+    captured this way turned out to be the new season's actual Round 1,
+    9 of its 10 pairings different from what our old guess assumed).
+
+    Returns None if the live tab has no round shown right now (e.g.
+    between rounds, or the DOM changed) -- callers should fall back to the
+    last_played+1 inference in that case, same as before this existed.
+    Assumes the driver is already on the results page.
+    """
+    nav_items = _wait_hydrated(driver, NAV_ITEM_SELECTOR)
+    live_tab = next((a for a in nav_items if "live" in a.text.lower()), None)
+    if live_tab is None:
+        return None
+
+    _real_click(driver, live_tab)
+    try:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, LIVE_ROUND_SELECTOR))
+        )
+    except Exception:
+        return None
+    time.sleep(1)
+
+    try:
+        el = driver.find_element(By.CSS_SELECTOR, LIVE_ROUND_SELECTOR)
+    except Exception:
+        return None
+    m = re.search(r"Round\s+(\d+)", el.text)
+    return int(m.group(1)) if m else None
 
 
 def scrape_results(driver):

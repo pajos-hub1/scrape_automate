@@ -42,10 +42,14 @@ def get_upcoming_predictions(conn):
     doubled fixtures (the same team appearing twice against different
     opponents); the dashboard should only ever show the current one.
     """
+    # season_id=None here is fine and intentional: get_current_fixture_batch
+    # treats that as "look up the season-boundary orphan batch" -- the
+    # fixtures page can roll over to a new season's Round 1 before that
+    # season exists in our DB (see run.py cmd_scrape), and there may be no
+    # 'current' season at all during that gap.
     current_season = conn.execute("SELECT season_id FROM seasons WHERE status = 'current'").fetchone()
-    if current_season is None:
-        return []
-    batch = get_current_fixture_batch(conn, current_season["season_id"])
+    season_id = current_season["season_id"] if current_season else None
+    batch = get_current_fixture_batch(conn, season_id)
     fixture_ids = [r["fixture_id"] for r in batch]
     if not fixture_ids:
         return []
