@@ -79,21 +79,13 @@ def get_upcoming_predictions(conn):
     return list(fixtures.values())
 
 
-def get_latest_reconciled_round(conn):
-    """Full predicted-vs-actual detail for the most recently reconciled
-    round, keyed by the REAL round_number (matches.round_number via
-    match_ref) -- not the fixture's guessed round_number, which can be off
-    by one (see track/reconcile.py). Each market cell carries every live
-    model's prediction separately."""
-    latest = conn.execute(
-        """SELECT m.round_number FROM prediction_results pr
-           JOIN matches m ON m.match_id = pr.match_ref
-           ORDER BY m.round_number DESC LIMIT 1"""
-    ).fetchone()
-    if latest is None:
-        return None
-    round_number = latest["round_number"]
-
+def get_reconciled_round(conn, season_id, round_number):
+    """Full predicted-vs-actual detail for one specific (season_id,
+    round_number). Each market cell carries every live model's prediction
+    separately. Scoped by season_id, not just round_number -- round numbers
+    reset to 1 every season, so round_number alone can't distinguish
+    "season 3's round 4" from "season 1's round 4."
+    """
     rows = conn.execute(
         """SELECT f.team_a, f.team_b, m.ft_a, m.ft_b, m.ht_a, m.ht_b,
                   p.model_version, pr.market, pr.predicted_label, pr.actual_label, pr.correct
@@ -101,10 +93,12 @@ def get_latest_reconciled_round(conn):
            JOIN predictions p ON p.prediction_id = pr.prediction_id
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            JOIN matches m ON m.match_id = pr.match_ref
-           WHERE m.round_number = ?
+           WHERE m.season_id = ? AND m.round_number = ?
            ORDER BY f.team_a, pr.market, p.model_version""",
-        (round_number,),
+        (season_id, round_number),
     ).fetchall()
+    if not rows:
+        return None
 
     matches = {}
     for r in rows:
@@ -118,22 +112,78 @@ def get_latest_reconciled_round(conn):
             "predicted": r["predicted_label"], "actual": r["actual_label"],
             "correct": bool(r["correct"]),
         }
-    return {"round_number": round_number, "matches": list(matches.values())}
+    return {"season_id": season_id, "round_number": round_number,
+            "is_upcoming": False, "matches": list(matches.values())}
+
+
+def get_round_history(conn, max_reconciled=20):
+    """Chronological browsing sequence for the dashboard's </> round
+    navigator: up to `max_reconciled` most recently reconciled rounds
+    (oldest to newest), followed by the current upcoming batch if one
+    exists (always last -- the default view).
+
+    Ordered by (season_id, round_number), NOT reconciled_at -- reconciled_at
+    reflects when a round's predictions were last WRITTEN, which isn't the
+    same as true play order: a round can get its reconciliation row
+    touched again later (e.g. a second model added after the fact,
+    backfilling predictions for an already-played round), jumbling
+    reconciled_at out of chronological order. season_id and round_number
+    are both reliable, non-guessed values instead -- season_id is assigned
+    in discovery order, and round_number for PLAYED matches comes from the
+    authoritative results carousel, not our guess (that guessing only ever
+    applies to the upcoming/unplayed fixture, handled separately below).
+    """
+    groups = conn.execute(
+        """SELECT DISTINCT m.season_id, m.round_number
+           FROM prediction_results pr JOIN matches m ON m.match_id = pr.match_ref
+           ORDER BY m.season_id DESC, m.round_number DESC
+           LIMIT ?""",
+        (max_reconciled,),
+    ).fetchall()
+    groups = list(reversed(groups))
+
+    history = []
+    for g in groups:
+        rr = get_reconciled_round(conn, g["season_id"], g["round_number"])
+        if rr:
+            history.append(rr)
+
+    upcoming = get_upcoming_predictions(conn)
+    if upcoming:
+        history.append({
+            "round_number": upcoming[0]["round_number"],
+            "is_upcoming": True,
+            "fixtures": upcoming,
+        })
+    return history
 
 
 def get_accuracy_trend(conn, model_version=None):
-    """Overall (all-markets-blended) accuracy per actual round,
-    chronological. model_version=None blends every live model together."""
-    query = """SELECT m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
+    """Overall (all-markets-blended) accuracy per actual round, chronological.
+    model_version=None blends every live model together.
+
+    Grouped by (season_id, round_number), NOT round_number alone -- round
+    numbers reset to 1 every season, so grouping by round_number alone
+    would merge season 1's round 5 and season 3's round 5 into one point.
+    The x-position returned is a synthetic sequential index (0, 1, 2, ...),
+    not the real round_number, so points from different seasons can never
+    collide on the chart; "label" carries the real season/round identity
+    for the tooltip.
+    """
+    query = """SELECT m.season_id, m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
                FROM prediction_results pr
                JOIN matches m ON m.match_id = pr.match_ref"""
     params = ()
     if model_version is not None:
         query += " JOIN predictions p ON p.prediction_id = pr.prediction_id WHERE p.model_version = ?"
         params = (model_version,)
-    query += " GROUP BY m.round_number ORDER BY m.round_number"
+    query += " GROUP BY m.season_id, m.round_number ORDER BY m.season_id, m.round_number"
     rows = conn.execute(query, params).fetchall()
-    return [{"round_number": r["round_number"], "n": r["n"], "accuracy": r["correct"] / r["n"]} for r in rows]
+    return [
+        {"round_number": i, "label": f'S{r["season_id"]} R{r["round_number"]}',
+         "n": r["n"], "accuracy": r["correct"] / r["n"]}
+        for i, r in enumerate(rows)
+    ]
 
 
 def get_models_and_stats(conn):

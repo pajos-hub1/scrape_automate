@@ -7,13 +7,7 @@ from pathlib import Path
 
 from config import BASE_DIR, ROUNDS_PER_SEASON
 from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
-from dashboard.data import (
-    get_accuracy_trend,
-    get_latest_reconciled_round,
-    get_meta,
-    get_models_and_stats,
-    get_upcoming_predictions,
-)
+from dashboard.data import get_accuracy_trend, get_meta, get_models_and_stats, get_round_history
 from track.report import accuracy_stats, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -58,70 +52,86 @@ MARKET_LABELS = {
 }
 
 
-def _render_upcoming(fixtures):
-    if not fixtures:
-        return '<p class="empty">No pending predictions -- run `python run.py predict` after the next scrape.</p>'
-
+def _render_round_panel(entry, index, total):
+    """One round's table -- either the upcoming (unreconciled) batch or a
+    reconciled round's predicted-vs-actual detail -- wrapped in a hidden-
+    by-default div the round-browser JS toggles visibility on."""
     header_cells = "".join(f"<th>{MARKET_LABELS[m]}</th>" for m in MARKET_ORDER)
-    rows = []
-    for fx in fixtures:
-        cells = []
-        for m in MARKET_ORDER:
-            by_model = fx["markets"].get(m)
-            if not by_model:
-                cells.append("<td>&mdash;</td>")
-                continue
-            lines = [
-                f'<div class="model-pred"><span class="model-tag">{_model_tag(mv)}</span> '
-                f'{html.escape(e["label"])} <span class="conf">{e["confidence"] * 100:.0f}%</span></div>'
-                for mv, e in sorted(by_model.items())
-            ]
-            cells.append(f'<td>{"".join(lines)}</td>')
-        rows.append(
-            f'<tr><td class="teams">{html.escape(fx["team_a"])} <span class="vs">vs</span> '
-            f'{html.escape(fx["team_b"])}</td>{"".join(cells)}</tr>'
+    is_upcoming = entry.get("is_upcoming", False)
+
+    if is_upcoming:
+        rows = []
+        for fx in entry["fixtures"]:
+            cells = []
+            for m in MARKET_ORDER:
+                by_model = fx["markets"].get(m)
+                if not by_model:
+                    cells.append("<td>&mdash;</td>")
+                    continue
+                lines = [
+                    f'<div class="model-pred"><span class="model-tag">{_model_tag(mv)}</span> '
+                    f'{html.escape(e["label"])} <span class="conf">{e["confidence"] * 100:.0f}%</span></div>'
+                    for mv, e in sorted(by_model.items())
+                ]
+                cells.append(f'<td>{"".join(lines)}</td>')
+            rows.append(
+                f'<tr><td class="teams">{html.escape(fx["team_a"])} <span class="vs">vs</span> '
+                f'{html.escape(fx["team_b"])}</td>{"".join(cells)}</tr>'
+            )
+        body = (
+            '<p class="section-note">Upcoming -- best-guess round numbering, see note below</p>'
+            f'<div class="table-scroll"><table><thead><tr><th>Fixture</th>{header_cells}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
         )
-
-    round_number = fixtures[0]["round_number"]
-    return (
-        f'<p class="section-note">Round {round_number} (best-guess numbering -- see note below)</p>'
-        f'<div class="table-scroll"><table><thead><tr><th>Fixture</th>{header_cells}</tr></thead>'
-        f'<tbody>{"".join(rows)}</tbody></table></div>'
-    )
-
-
-def _render_latest_round(latest):
-    if latest is None:
-        return '<p class="empty">No rounds reconciled yet.</p>'
-
-    header_cells = "".join(f"<th>{MARKET_LABELS[m]}</th>" for m in MARKET_ORDER)
-    rows = []
-    for m in latest["matches"]:
-        cells = []
-        for market in MARKET_ORDER:
-            by_model = m["markets"].get(market)
-            if not by_model:
-                cells.append("<td>&mdash;</td>")
-                continue
-            actual = next(iter(by_model.values()))["actual"]
-            lines = [f'<div class="model-pred-actual">actual: {html.escape(actual)}</div>']
-            for mv, e in sorted(by_model.items()):
-                mark = "&#10003;" if e["correct"] else "&#10007;"
-                cls = "hit" if e["correct"] else "miss"
-                lines.append(f'<div class="model-pred {cls}"><span class="model-tag">{_model_tag(mv)}</span> '
-                              f'{mark} {html.escape(e["predicted"])}</div>')
-            cells.append(f'<td>{"".join(lines)}</td>')
-        score = f'{m["ft_a"]}-{m["ft_b"]}' + (f' (HT {m["ht_a"]}-{m["ht_b"]})' if m["ht_a"] is not None else "")
-        rows.append(
-            f'<tr><td class="teams">{html.escape(m["team_a"])} <span class="vs">vs</span> '
-            f'{html.escape(m["team_b"])} <span class="score">{score}</span></td>{"".join(cells)}</tr>'
+        label = f'Round {entry["round_number"]} (upcoming)'
+    else:
+        rows = []
+        for m in entry["matches"]:
+            cells = []
+            for market in MARKET_ORDER:
+                by_model = m["markets"].get(market)
+                if not by_model:
+                    cells.append("<td>&mdash;</td>")
+                    continue
+                actual = next(iter(by_model.values()))["actual"]
+                lines = [f'<div class="model-pred-actual">actual: {html.escape(actual)}</div>']
+                for mv, e in sorted(by_model.items()):
+                    mark = "&#10003;" if e["correct"] else "&#10007;"
+                    cls = "hit" if e["correct"] else "miss"
+                    lines.append(f'<div class="model-pred {cls}"><span class="model-tag">{_model_tag(mv)}</span> '
+                                  f'{mark} {html.escape(e["predicted"])}</div>')
+                cells.append(f'<td>{"".join(lines)}</td>')
+            score = f'{m["ft_a"]}-{m["ft_b"]}' + (f' (HT {m["ht_a"]}-{m["ht_b"]})' if m["ht_a"] is not None else "")
+            rows.append(
+                f'<tr><td class="teams">{html.escape(m["team_a"])} <span class="vs">vs</span> '
+                f'{html.escape(m["team_b"])} <span class="score">{score}</span></td>{"".join(cells)}</tr>'
+            )
+        body = (
+            f'<div class="table-scroll"><table><thead><tr><th>Result</th>{header_cells}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
         )
+        label = f'Round {entry["round_number"]} (reconciled)'
 
-    return (
-        f'<p class="section-note">Round {latest["round_number"]}</p>'
-        f'<div class="table-scroll"><table><thead><tr><th>Result</th>{header_cells}</tr></thead>'
-        f'<tbody>{"".join(rows)}</tbody></table></div>'
+    active_cls = " active" if index == total - 1 else ""
+    return f'<div class="round-panel{active_cls}" data-label="{html.escape(label)}">{body}</div>'
+
+
+def _render_round_browser(history):
+    if not history:
+        return '<p class="empty">No predictions yet -- run `python run.py predict` after the next scrape.</p>'
+
+    panels = "".join(_render_round_panel(entry, i, len(history)) for i, entry in enumerate(history))
+    last = history[-1]
+    default_label = f'Round {last["round_number"]} (' + ("upcoming" if last.get("is_upcoming") else "reconciled") + ")"
+
+    nav = (
+        '<div class="round-nav">'
+        '<button id="round-prev" type="button" aria-label="Previous round">&larr;</button>'
+        f'<span id="round-nav-label" class="section-note">{html.escape(default_label)}</span>'
+        '<button id="round-next" type="button" aria-label="Next round">&rarr;</button>'
+        '</div>'
     )
+    return nav + panels
 
 
 def _render_verdict_summary(stats):
@@ -231,6 +241,16 @@ td.miss {{ color: var(--bad); }}
 .model-pred-actual {{ color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 3px; }}
 .model-tag {{ display: inline-block; min-width: 32px; color: var(--text-muted); font-size: 0.72rem;
   font-weight: 600; text-transform: uppercase; }}
+.round-nav {{ display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }}
+.round-nav button {{
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-primary); cursor: pointer; padding: 4px 12px; font-size: 0.95rem; line-height: 1.6;
+}}
+.round-nav button:disabled {{ opacity: 0.35; cursor: default; }}
+.round-nav button:not(:disabled):hover {{ background: var(--page); }}
+#round-nav-label {{ margin: 0; font-weight: 500; }}
+.round-panel {{ display: none; }}
+.round-panel.active {{ display: block; }}
 section h3 {{ font-size: 0.9rem; margin: 16px 0 8px; color: var(--text-secondary); }}
 section h3:first-of-type {{ margin-top: 0; }}
 .chart {{ width: 100%; height: auto; }}
@@ -265,13 +285,8 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
-  <h2>Upcoming round predictions</h2>
-  {upcoming_html}
-</section>
-
-<section>
-  <h2>Latest reconciled round: predicted vs actual</h2>
-  {latest_round_html}
+  <h2>Round browser: predictions and results</h2>
+  {round_browser_html}
 </section>
 
 <section>
@@ -298,10 +313,12 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
   outcome so far for everything else. "Odds-implied" only applies to 1X2/BTTS -- Over/Under odds were
   never successfully scraped (a known gap from the results scraper build). Small sample sizes make any
   of these percentages noisy; treat them as directional until many more rounds have been reconciled.</p>
-  <p>Round numbers on the "upcoming predictions" table are the pipeline's own best-guess inference
-  (last played round + 1), made against a fixtures page that carries no round label at all -- it can be
-  off by one in practice. Reconciliation itself does not depend on this number (matches are found by
-  team pairing, not round number), so accuracy figures are unaffected either way.</p>
+  <p>Round numbers on the "upcoming" panel of the round browser are the pipeline's own best-guess
+  inference (the live round read straight off the site, plus one -- see scraper/results_scraper.py), made
+  against a fixtures page that carries no round label at all -- it can still occasionally be off. Use the
+  &larr;/&rarr; buttons above to step through recent history; reconciliation itself does not depend on
+  this number (matches are found by team pairing, not round number), so accuracy figures are unaffected
+  either way.</p>
 </footer>
 </div>
 <script>
@@ -316,6 +333,26 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
     localStorage.setItem('zoom-dashboard-theme', next);
   }});
 }})();
+(function() {{
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.round-panel'));
+  var label = document.getElementById('round-nav-label');
+  var prevBtn = document.getElementById('round-prev');
+  var nextBtn = document.getElementById('round-next');
+  if (!panels.length || !prevBtn) return;
+
+  var idx = panels.length - 1;
+  panels.forEach(function(p, i) {{ if (p.classList.contains('active')) idx = i; }});
+
+  function render() {{
+    panels.forEach(function(p, i) {{ p.classList.toggle('active', i === idx); }});
+    label.textContent = panels[idx].dataset.label;
+    prevBtn.disabled = idx === 0;
+    nextBtn.disabled = idx === panels.length - 1;
+  }}
+  prevBtn.addEventListener('click', function() {{ if (idx > 0) {{ idx--; render(); }} }});
+  nextBtn.addEventListener('click', function() {{ if (idx < panels.length - 1) {{ idx++; render(); }} }});
+  render();
+}})();
 </script>
 </body>
 </html>
@@ -326,16 +363,14 @@ def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
     stats = accuracy_stats(conn)  # blended across models -- used only for the headline "Overall" tile
     models_and_stats = get_models_and_stats(conn)
-    upcoming = get_upcoming_predictions(conn)
-    latest_round = get_latest_reconciled_round(conn)
+    history = get_round_history(conn)
     trend = get_accuracy_trend(conn)
 
     html_out = PAGE_TEMPLATE.format(
         generated_at=meta["generated_at"],
         meta_section=_render_meta_section(meta),
         overall_tile=_render_overall_tile(stats),
-        upcoming_html=_render_upcoming(upcoming),
-        latest_round_html=_render_latest_round(latest_round),
+        round_browser_html=_render_round_browser(history),
         model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
         trend_chart_html=accuracy_trend_chart(trend),
     )

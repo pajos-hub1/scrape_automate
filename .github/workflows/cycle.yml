@@ -1,19 +1,26 @@
 name: Zoom prediction cycle
 
-# Every hour on the hour -- tightened from 90 minutes to be safer relative
-# to how long a round actually takes (~90 min), leaving more margin against
-# schedule drift or a skipped run.
+# Two triggers per hour, at :17 and :47 -- NOT on the hour. GitHub's own
+# docs warn that "the start of every hour" (:00) is the single most
+# congested slot for scheduled workflows across all of GitHub, and under
+# load some scheduled runs are dropped entirely rather than just delayed --
+# confirmed in practice: two consecutive runs landed 3h17m apart instead of
+# ~1h with the old single "0 * * * *" schedule. Two off-peak triggers do
+# double duty: each individually avoids the worst congestion, and if either
+# one still gets dropped, the other roughly halves the resulting gap
+# instead of losing a full hour.
 #
-# NOTE: GitHub's scheduled triggers are best-effort and can slip by minutes
-# to (rarely) tens of minutes under load -- not a hard real-time guarantee.
-# That's fine at this cadence: a season takes ~2.5 days to complete, so
-# occasional schedule drift doesn't put data at real risk. A prolonged
-# outage (hours, not minutes) is the actual danger -- GitHub emails the
-# repo owner automatically when a scheduled run fails, and `workflow_dispatch`
-# below lets you trigger a catch-up run by hand at any time.
+# NOTE: GitHub's scheduled triggers remain best-effort even off-peak and can
+# still slip by minutes to (rarely) tens of minutes under load -- not a hard
+# real-time guarantee. That's fine at this cadence: a season takes ~2.5 days
+# to complete, so occasional schedule drift doesn't put data at real risk.
+# A prolonged outage (hours, not minutes) is the actual danger -- GitHub
+# emails the repo owner automatically when a scheduled run fails, and
+# `workflow_dispatch` below lets you trigger a catch-up run by hand anytime.
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "17 * * * *"
+    - cron: "47 * * * *"
   workflow_dispatch: {}
 
 permissions:

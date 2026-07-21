@@ -123,8 +123,9 @@ def accuracy_trend_chart(trend, width=680, height=220):
     svg.append(f'<path d="{path}" fill="none" stroke="var(--series-1)" stroke-width="2" />')
 
     for p, (x, y) in zip(trend, points):
+        label = p.get("label", f'Round {p["round_number"]}')
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="var(--series-1)">'
-                    f'<title>Round {p["round_number"]}: {p["accuracy"] * 100:.1f}% (n={p["n"]})</title>'
+                    f'<title>{label}: {p["accuracy"] * 100:.1f}% (n={p["n"]})</title>'
                     f'</circle>')
 
     last_x, last_y = points[-1]
