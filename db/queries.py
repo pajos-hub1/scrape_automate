@@ -6,7 +6,7 @@ re-deriving its own slightly-different version of the same question.
 from config import MATCHES_PER_ROUND
 
 
-def get_current_fixture_batch(conn, season_id, batch_size=MATCHES_PER_ROUND):
+def get_current_fixture_batch(conn, season_id, batch_size=MATCHES_PER_ROUND, include_orphan=True):
     """The single most-recently-scraped batch of not-yet-played fixtures
     for a season, in match_number order.
 
@@ -42,17 +42,34 @@ def get_current_fixture_batch(conn, season_id, batch_size=MATCHES_PER_ROUND):
     exists in our DB at all -- it only gets created once its own Round 1
     finishes and gets fingerprinted. Such fixtures are stored with
     season_id left unset rather than wrongly tagged to the old season.
-    Passing season_id=None here looks up exactly that orphaned batch;
-    passing a real season_id looks up its own upcoming batch OR an
-    orphaned one, since at any moment there's only ever one genuine
-    current batch, tagged or not.
+    Passing season_id=None here looks up exactly that orphaned batch.
+
+    include_orphan (only matters when season_id is a real id): whether to
+    ALSO fall back to an orphaned batch if the season has none of its own.
+    Safe and desired for callers that only ever display/predict a batch on
+    its own (dashboard, predict/build.py's fallback path). NOT safe for
+    features/build.py: it appends whatever batch this returns onto that
+    SAME season's own match history as a virtual next round, and the
+    orphan batch's round_number is always 1 (the boundary code labels a
+    new season's first round that way, unconditionally) -- if the CURRENT
+    season is itself sitting at its own finale (still marked 'current'
+    while a new orphan batch already exists), that season already has a
+    real, played Round 1 of its own, so appending an orphan "Round 1" on
+    top collides: every team ends up listed twice at round 1, which is
+    exactly the "non-unique multi-index" crash this parameter exists to
+    prevent. features/build.py passes include_orphan=False and lets
+    predict/build.py's separate orphan-batch path (which never mixes in a
+    season's real history to begin with) handle it instead.
     """
     if season_id is not None:
         max_played_row = conn.execute(
             "SELECT MAX(round_number) AS mr FROM matches WHERE season_id = ?", (season_id,)
         ).fetchone()
         max_played_round = max_played_row["mr"] or 0
-        where_clause = "(season_id = ? AND round_number > ?) OR season_id IS NULL"
+        if include_orphan:
+            where_clause = "(season_id = ? AND round_number > ?) OR season_id IS NULL"
+        else:
+            where_clause = "season_id = ? AND round_number > ?"
         params = (season_id, max_played_round)
     else:
         where_clause = "season_id IS NULL"

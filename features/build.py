@@ -57,7 +57,18 @@ def build_features(conn):
             # idempotency) -- get_current_fixture_batch picks out just the
             # single freshest poll's batch (see db/queries.py for why
             # fixture_id-recency, not round_number, is what identifies it).
-            batch = get_current_fixture_batch(conn, season_id)
+            #
+            # include_orphan=False is required here: this batch gets appended
+            # onto THIS season's own match history as a virtual next round,
+            # and an orphan batch is always labeled round_number=1 -- if this
+            # season is itself sitting at its own finale (still 'current'
+            # while a new, not-yet-fingerprinted season's orphan batch
+            # already exists), this season already has a real, played Round
+            # 1 of its own. Including the orphan here would collide every
+            # team at round_number=1 twice and crash build_season_features.
+            # predict/build.py's separate orphan-batch path handles it
+            # instead, without ever mixing in a season's real history.
+            batch = get_current_fixture_batch(conn, season_id, include_orphan=False)
             current_ids = [r["fixture_id"] for r in batch]
             if batch:
                 fixtures = pd.DataFrame(batch)[["fixture_id", "round_number", "match_number", "team_a", "team_b"]]
