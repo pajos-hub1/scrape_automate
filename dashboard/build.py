@@ -27,9 +27,16 @@ def _stat_tile(label, value, sub=None):
 
 
 def _render_meta_section(meta):
-    round_str = f"{meta['current_round']} / {ROUNDS_PER_SEASON}" if meta["current_round"] is not None else "n/a"
+    if meta["current_round"] is not None:
+        round_str, round_sub = f"{meta['current_round']} / {ROUNDS_PER_SEASON}", None
+    elif meta.get("pending_round"):
+        round_str = "New season starting"
+        round_sub = f"Round {meta['pending_round']} predicted, not yet confirmed"
+    else:
+        round_str, round_sub = "n/a", None
+
     tiles = [
-        _stat_tile("Current season round", round_str),
+        _stat_tile("Current season round", round_str, round_sub),
         _stat_tile("Seasons preserved", meta["seasons_tracked"], f"{meta['seasons_archived']} archived"),
         _stat_tile("Last scraped", (meta["last_scraped"] or "n/a").replace("T", " ").split("+")[0] + " UTC"),
     ]

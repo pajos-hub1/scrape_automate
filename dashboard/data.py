@@ -16,9 +16,27 @@ def get_meta(conn):
     archived_count = sum(1 for s in seasons if s["status"] == "archived")
     last_scraped = max((s["last_seen"] for s in seasons), default=None)
 
+    # No season is 'current' during the real gap between one season's
+    # Round 38 posting and the next season's own Round 1 finishing (see
+    # run.py cmd_scrape's live-round boundary handling) -- predictions for
+    # the new season are already flowing via the orphan-batch path even
+    # though no season row exists for them yet. Surface that instead of a
+    # bare "n/a", which reads like something's broken when it's actually
+    # just this expected gap.
+    pending_round = None
+    if current is None:
+        row = conn.execute(
+            """SELECT MAX(f.round_number) AS mr
+               FROM predictions p JOIN fixtures f ON f.fixture_id = p.fixture_ref
+               LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
+               WHERE pr.result_id IS NULL"""
+        ).fetchone()
+        pending_round = row["mr"] if row else None
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "current_round": current["round_count"] if current else None,
+        "pending_round": pending_round,
         "previous_complete": previous is not None,
         "seasons_tracked": len(seasons),
         "seasons_archived": archived_count,
