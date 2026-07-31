@@ -188,6 +188,8 @@ FEATURE_COLUMNS = [
     "b_away_played", "b_away_wins", "b_away_draws", "b_away_losses", "b_away_gf", "b_away_ga",
     "a_season_pts_rate", "a_season_gf_avg", "a_season_ga_avg",
     "b_season_pts_rate", "b_season_gf_avg", "b_season_ga_avg",
+    "a_prior_pts_rate", "a_prior_gf_avg", "a_prior_ga_avg",
+    "b_prior_pts_rate", "b_prior_gf_avg", "b_prior_ga_avg",
     "odds_home_prob", "odds_draw_prob", "odds_away_prob", "odds_over25_prob", "odds_under25_prob",
     "odds_btts_yes_prob", "odds_btts_no_prob",
 ]

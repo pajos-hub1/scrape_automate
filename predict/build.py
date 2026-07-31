@@ -6,6 +6,7 @@ something already played.
 """
 from db.queries import ODDS_FIELD_MAP, get_current_fixture_batch, get_latest_odds_by_fixture
 from db.upsert import upsert_prediction
+from features.build import PRIOR_RATING_FALLBACK, PRIOR_RATING_STATS, compute_latest_team_ratings
 from predict.training_data import STAT_FEATURE_COLS
 
 
@@ -64,11 +65,24 @@ def build_predictions(conn, predictor):
     batch = get_current_fixture_batch(conn, None)
     if batch:
         odds_map = get_latest_odds_by_fixture(conn, [r["fixture_id"] for r in batch])
+        # A brand-new season has zero within-season history (no form/H2H/
+        # season-rate signal to compute at all), but its teams aren't new --
+        # every one of them has a real record from every completed season
+        # before this one. That cross-season prior is worth the most exactly
+        # here (round 1 of a new season is the single point where the normal
+        # per-season path has literally nothing else to go on), so it's
+        # looked up directly rather than left at the STAT_FEATURE_COLS
+        # default like every other feature this path can't compute yet.
+        team_ratings = compute_latest_team_ratings(conn)
         orphan_rows = []
         for r in batch:
             row = {c: None for c in STAT_FEATURE_COLS}
             row["fixture_ref"] = r["fixture_id"]
             row["team_a"], row["team_b"] = r["team_a"], r["team_b"]
+            for prefix, team in [("a", r["team_a"]), ("b", r["team_b"])]:
+                rating = team_ratings.get(team, PRIOR_RATING_FALLBACK)
+                for stat in PRIOR_RATING_STATS:
+                    row[f"{prefix}_prior_{stat}"] = rating.get(stat, PRIOR_RATING_FALLBACK[stat])
             fixture_odds = odds_map.get(r["fixture_id"], {})
             for (market, selection), field in ODDS_FIELD_MAP.items():
                 row[field] = fixture_odds.get((market, selection))

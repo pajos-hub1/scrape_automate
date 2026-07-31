@@ -106,6 +106,17 @@ CREATE TABLE IF NOT EXISTS features (
     a_season_pts_rate REAL, a_season_gf_avg REAL, a_season_ga_avg REAL,
     b_season_pts_rate REAL, b_season_gf_avg REAL, b_season_ga_avg REAL,
 
+    -- Cross-season team-strength prior: each team's pts_rate/gf/ga averaged
+    -- over every STRICTLY PRIOR completed season (never the current one).
+    -- Team quality correlates 0.76-0.88 season-to-season in this data
+    -- (verified empirically) -- teams keep a persistent identity here
+    -- rather than being reshuffled, so this is real signal the season-
+    -- scoped features above can't see, especially in early rounds before
+    -- within-season form has enough games to mean much. See
+    -- features/build.py's compute_prior_season_ratings().
+    a_prior_pts_rate REAL, a_prior_gf_avg REAL, a_prior_ga_avg REAL,
+    b_prior_pts_rate REAL, b_prior_gf_avg REAL, b_prior_ga_avg REAL,
+
     -- Odds-implied probabilities, captured closest to feature computation time.
     odds_home_prob REAL, odds_draw_prob REAL, odds_away_prob REAL,
     odds_over25_prob REAL, odds_under25_prob REAL,
@@ -150,6 +161,25 @@ CREATE TABLE IF NOT EXISTS prediction_results (
 """
 
 
+# Columns added to `features` after the table already existed in production
+# DBs -- CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so
+# these need an explicit, idempotent ALTER TABLE migration. New/fresh DBs
+# get them for free from SCHEMA_SQL above; this only ever fires anything on
+# a DB created before this column set existed.
+FEATURES_MIGRATION_COLUMNS = {
+    "a_prior_pts_rate": "REAL", "a_prior_gf_avg": "REAL", "a_prior_ga_avg": "REAL",
+    "b_prior_pts_rate": "REAL", "b_prior_gf_avg": "REAL", "b_prior_ga_avg": "REAL",
+}
+
+
+def _migrate(conn):
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(features)")}
+    for col, coltype in FEATURES_MIGRATION_COLUMNS.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE features ADD COLUMN {col} {coltype}")
+
+
 def init_db(conn):
     conn.executescript(SCHEMA_SQL)
+    _migrate(conn)
     conn.commit()

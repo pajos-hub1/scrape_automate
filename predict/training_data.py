@@ -18,6 +18,8 @@ STAT_FEATURE_COLS = [
     "b_away_played", "b_away_wins", "b_away_draws", "b_away_losses", "b_away_gf", "b_away_ga",
     "a_season_pts_rate", "a_season_gf_avg", "a_season_ga_avg",
     "b_season_pts_rate", "b_season_gf_avg", "b_season_ga_avg",
+    "a_prior_pts_rate", "a_prior_gf_avg", "a_prior_ga_avg",
+    "b_prior_pts_rate", "b_prior_gf_avg", "b_prior_ga_avg",
 ]
 
 
