@@ -5,24 +5,30 @@ goal-based markets (OU2.5, CorrectScore, HT_1X2, HT_OU1.5).
 
 Two deliberate choices, both explained to the user before building this:
 
-- Trained ONLY on team form/H2H/season-rate features -- never odds. None of
-  the 540 historical rows have odds (only ever scraped for the live
-  upcoming fixture), so there's nothing to train that relationship on; and
-  feeding odds in would make "beats odds" a circular comparison, which is
-  exactly the trivial "ties odds" result baseline_v0 already gets on
-  1X2/BTTS. This model is meant to be an honest, independent test of
+- Trained ONLY on team form/H2H/season-rate/cross-season-prior features --
+  never odds. None of the historical rows have odds (only ever scraped for
+  the live upcoming fixture), so there's nothing to train that relationship
+  on; and feeding odds in would make "beats odds" a circular comparison,
+  which is exactly the trivial "ties odds" result baseline_v0 already gets
+  on 1X2/BTTS. This model is meant to be an honest, independent test of
   whether team-stats alone carry signal beyond what the bookmaker prices in.
 
 - Linear/GLM models (logistic + Poisson regression), not gradient-boosted
-  trees. On 540 rows of RNG-driven outcomes, a tree ensemble is far more
-  likely to fit noise and look good in-sample while carrying no real
-  signal. Revisit with a tree-based model once there's dramatically more
-  data (the ballpark discussed: dozens of preserved seasons, not 2).
+  trees. Re-tested with 6 seasons (2330+ matches, up from the original 2
+  seasons/~540 rows) -- trees still lost on every single market, so this
+  isn't a data-starvation artifact, it's a real property of this feature
+  set. Also re-tested: a persistent cross-match Elo rating (12-point
+  hyperparameter sweep) and recency-weighting the cross-season prior --
+  neither beat the simpler flat-average approach already in
+  predict/training_data.py's a_/b_prior_* columns. What DID help,
+  confirmed robust across 5 independently-seeded CV splits: retuning C
+  down to 0.01 (see below) and the dynamic prior/current-season shrinkage
+  interaction features (also in training_data.py).
 
 Retrains from scratch on every construction (see predict/training_data.py)
-rather than persisting a serialized model -- fitting on ~540x36 floats
-takes well under a second, so there's no benefit to caching it, and this
-guarantees predictions always reflect the latest data.
+rather than persisting a serialized model -- fitting takes well under a
+second even at thousands of rows, so there's no benefit to caching it, and
+this guarantees predictions always reflect the latest data.
 """
 import numpy as np
 from sklearn.linear_model import LogisticRegression, PoissonRegressor
@@ -47,8 +53,16 @@ class MLPredictor(Predictor):
         self.scaler = StandardScaler().fit(X)
         Xs = self.scaler.transform(X)
 
-        self.clf_1x2 = LogisticRegression(max_iter=2000, C=0.5).fit(Xs, df["result_1x2"])
-        self.clf_btts = LogisticRegression(max_iter=2000, C=0.5).fit(Xs, df["btts"])
+        # C=0.01 for the classifiers (not the old 0.5) -- retuned after the
+        # feature count grew from 36 to 42 (cross-season prior + shrinkage
+        # interactions), verified as a robust improvement across 5
+        # independently-seeded CV fold splits, not just one lucky split.
+        # The goal regressors' alpha=1.0 is untouched -- the same
+        # retuning-plus-shrinkage combination was NOT a consistent win for
+        # them (won some seeds, lost others), so there was nothing safe to
+        # change there. See predict/backtest.py for the same C.
+        self.clf_1x2 = LogisticRegression(max_iter=2000, C=0.01).fit(Xs, df["result_1x2"])
+        self.clf_btts = LogisticRegression(max_iter=2000, C=0.01).fit(Xs, df["btts"])
         self.reg_home_goals = PoissonRegressor(alpha=1.0, max_iter=2000).fit(Xs, df["ft_a"])
         self.reg_away_goals = PoissonRegressor(alpha=1.0, max_iter=2000).fit(Xs, df["ft_b"])
 

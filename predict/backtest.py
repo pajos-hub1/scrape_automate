@@ -33,14 +33,14 @@ def run_backtest(conn):
 
     # --- 1X2 ---
     y_1x2 = df["result_1x2"].values
-    preds = cross_val_predict(LogisticRegression(max_iter=2000, C=0.5), Xs, y_1x2, cv=skf)
+    preds = cross_val_predict(LogisticRegression(max_iter=2000, C=0.01), Xs, y_1x2, cv=skf)
     baseline_acc = (y_1x2 == "Home").mean()
     results["1X2"] = {"n": n, "model_acc": (preds == y_1x2).mean(),
                        "baseline_acc": baseline_acc, "baseline_label": "always-Home"}
 
     # --- BTTS ---
     y_btts = df["btts"].values
-    preds = cross_val_predict(LogisticRegression(max_iter=2000, C=0.5), Xs, y_btts, cv=skf)
+    preds = cross_val_predict(LogisticRegression(max_iter=2000, C=0.01), Xs, y_btts, cv=skf)
     mc = pd.Series(y_btts).value_counts().idxmax()
     results["BTTS"] = {"n": n, "model_acc": (preds == y_btts).mean(),
                         "baseline_acc": (y_btts == mc).mean(), "baseline_label": f"always-{mc}"}
