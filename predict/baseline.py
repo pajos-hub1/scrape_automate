@@ -10,10 +10,13 @@ prediction pipeline is testable end-to-end, and it doubles as one of the
 BTTS:         bookmaker odds-implied probabilities when available, else a
               rough per-side scoring likelihood from attack/defense season
               averages.
-OU2.5:        no O/U odds scraped yet (Stage 1 gap, still open) -- always
-              uses an independent-Poisson model over each side's expected
-              goals.
-CorrectScore: same Poisson model, reporting the top scorelines.
+OU2.5:        bookmaker odds-implied probabilities when available, else an
+              independent-Poisson model over each side's expected goals.
+CorrectScore: independent-Poisson model, reporting the top scorelines --
+              not odds-informed yet, even though CorrectScore odds are now
+              scraped (see track/reconcile.py's odds_implied_label for
+              where those are actually used: the dashboard's market-implied
+              comparison column, not this model).
 HT_1X2 /
 HT_OU1.5:     half-time goals aren't separately feature-engineered (Stage 2
               only computed FT-based features), so HT expected goals are

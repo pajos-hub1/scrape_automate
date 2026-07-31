@@ -79,10 +79,15 @@ def _latest_odds_map(conn, fixture_id):
 
 
 def odds_implied_label(odds_map, market):
-    """What the bookmaker's own odds favored pre-kickoff, for markets we
-    actually scrape odds for (1X2, BTTS). None for OU2.5/CorrectScore/HT_*
-    -- we don't scrape those markets' odds (OU2.5 is the open Stage 1 gap;
-    the others were never in scope)."""
+    """What the bookmaker's own odds favored pre-kickoff, for every market
+    we predict. CorrectScore reads straight off the scraped full grid.
+    HT_1X2 has no standalone market on bet9ja -- it's derived by summing
+    the HTFT grid's implied probabilities into the three HT-result buckets
+    (e.g. Home = "1/1" + "1/X" + "1/2", i.e. every HTFT combo where the
+    halftime leg is a home lead), which is a reasonable read of what the
+    market as a whole implies about the HT result even though no single
+    priced selection is "just" that. HT_OU1.5 stays None -- bet9ja has no
+    market (standalone or derivable) for halftime goal totals at all."""
     if market == "1X2":
         vals = {"Home": odds_map.get(("1X2", "Home")),
                 "Draw": odds_map.get(("1X2", "Draw")),
@@ -91,10 +96,20 @@ def odds_implied_label(odds_map, market):
         vals = {"Yes": odds_map.get(("BTTS", "Yes")), "No": odds_map.get(("BTTS", "No"))}
     elif market == "OU2.5":
         vals = {"Over": odds_map.get(("OU2.5", "Over")), "Under": odds_map.get(("OU2.5", "Under"))}
+    elif market == "CorrectScore":
+        vals = {sel: prob for (mkt, sel), prob in odds_map.items() if mkt == "CorrectScore"}
+    elif market == "HT_1X2":
+        buckets = {"Home": ("1/1", "1/X", "1/2"), "Draw": ("X/1", "X/X", "X/2"), "Away": ("2/1", "2/X", "2/2")}
+        vals = {}
+        for label, keys in buckets.items():
+            probs = [odds_map.get(("HTFT", k)) for k in keys]
+            if any(p is None for p in probs):
+                return None
+            vals[label] = sum(probs)
     else:
         return None
 
-    if any(v is None for v in vals.values()):
+    if not vals or any(v is None for v in vals.values()):
         return None
     return max(vals, key=vals.get)
 

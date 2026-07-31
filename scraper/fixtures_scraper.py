@@ -1,7 +1,7 @@
 """Upcoming fixtures + odds scraper.
 
 Live DOM findings this is built against (bet9ja mobile sportsbook, Zoom
-Soccer hub, verified 2026-07-18):
+Soccer hub, verified 2026-07-31):
 
 - https://sports.bet9ja.com/mobile/sport/zoomsoccer/101 lists events across
   ALL zoom leagues combined (World Cup-Zoom, Premier-Zoom, Liga-Zoom, ...).
@@ -13,22 +13,51 @@ Soccer hub, verified 2026-07-18):
   switches leagues -- a JS-dispatched click is ignored.
 - Each fixture card is a `div.home-page-nav__content` with two children:
     1. `div.table-f > .match-content__row--league` -- "Premier-Zoom - Premier-Zoom"
-    2. `div.table-a` containing:
-       - `div.match-content__info#match_info_<id>` with two
-         `.match-content__row--team` divs (home, away) and a
-         `.match-content__row--info` with kickoff time text
-       - `div.bets > .bets__row > .bets__item` (one per selection, in
-         column order) with the price in `a.bets__item--link > span`
+    2. `div.table-a` containing `div.match-content__info#match_info_<id>`
+       with two `.match-content__row--team` divs (home, away) and a
+       `.match-content__row--info` with kickoff time text.
   `div.table-f` is NOT a unique card selector on its own -- it's reused
   throughout the page (headers, per-market panels). Anchor everything off
-  `.match-content__row--league` / `.match-content__info` instead.
-- Market switching: `div.filter--btn` rows across the top change which
-  columns `.bets__row` renders. Confirmed working for "Both Teams to
-  Score" (columns become Yes/No). "Over/Under Goals" did NOT change the
-  rendered columns within a plain click + wait in testing -- it likely
-  needs a goal-line sub-selection step not yet reverse-engineered. Only
-  1X2 (default) and BTTS are scraped for now; O/U 2.5 is a known gap to
-  pick up in a follow-up pass.
+  `.match-content__row--league` / `.match-content__info` instead. The
+  numeric id in `match_info_<id>` (the "match_ext_id") is bet9ja's own
+  event id, stable across the list page and the per-event detail page.
+- Per-event detail page: every fixture card is clickable through to
+  https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/<slug>/<slug>/<slug>/<match_ext_id>/VS_1X2
+  -- but the slug segments turn out to be cosmetic. Navigating straight to
+  .../eventdetail/zoomsoccer/x/x/x/<match_ext_id>/VS_1X2 with garbage
+  placeholders resolves to the exact same page (confirmed live), so this
+  page never needs to be reached by clicking a card -- direct navigation
+  using just the id already scraped off the list page works, is far more
+  robust than re-locating+clicking a card per fixture, and needs no waiting
+  for market-tab JS to re-render.
+- The detail page renders EVERY market at once (confirmed ~26 for a Zoom
+  fixture: 1X2, 1X2 1UP/2UP, Double Chance, Over/Under Goals at 4 lines,
+  Correct Score, BTTS, Home/Away O/U, 1X2 & O/U combos, Half Time/Full
+  Time, Handicap, DC & O/U, Multi Goal, Draw No Bet, Multi Correct Score,
+  and several combo/early-minute markets) -- no clicking or tab-switching
+  needed, unlike the old global-market-tab approach this replaces (which
+  could only ever get 1X2 + BTTS, and never cracked O/U Goals at all).
+  Each market lives in a `div.accordion-box` under `div.match__markets`,
+  already expanded (`.open`) with no interaction required. Each box's
+  `div.accordion-toggle` carries a stable `data-anchor` (e.g. "VS_1X2",
+  "VS_GGNG", "VS_OU", "VS_CS", "VS_HTFT") -- keying off that, not the
+  human-readable title text, since the title text's case/wording varies
+  ("Correct score" vs "CORRECT SCORE" is just CSS text-transform) and
+  isn't guaranteed stable across bet9ja UI tweaks the way an internal
+  anchor key is.
+  - Flat markets (1X2, BTTS, Half Time/Full Time, Correct Score) render as
+    `div.match-scores__row > div.match-scores__item > div.table-f` pairs
+    of `div.elem` (label) + `div.odd` (price) -- one item per selection.
+  - The Over/Under Goals market is the one exception: each
+    `div.match-scores__row` bundles a `div.match-scores__item.selection`
+    (the goal line, e.g. "1.5") followed by two plain `.match-scores__item`
+    entries (Over, Under) -- the goal line has to be carried as context for
+    the two prices that follow it in the same row.
+  1X2 selections come back as "1"/"X"/"2" on this page (not the list page's
+  positional Home/Draw/Away) -- mapped to Home/Draw/Away here to keep every
+  downstream consumer (ODDS_FIELD_MAP, reconcile.py) on one convention.
+  Correct Score selections come back "1:0" -- normalized to "1-0" to match
+  actual_labels()'s `f"{ft_a}-{ft_b}"` format in track/reconcile.py.
 - The page shows no round number, only kickoff time -- round_number for a
   scraped fixture has to be inferred by the caller (next round after the
   latest played round in the current season), not read off this page.
@@ -38,9 +67,9 @@ import time
 
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.action_chains import ActionChains
 
 from config import FIXTURES_URL, LEAGUE_FILTER
 
@@ -49,9 +78,17 @@ LEAGUE_ROW_SELECTOR = ".match-content__row--league"
 MATCH_INFO_SELECTOR = ".match-content__info"
 TEAM_SELECTOR = ".match-content__row--team"
 INFO_TIME_SELECTOR = ".match-content__row--info"
-BETS_ROW_SELECTOR = ".bets__row"
-BET_ITEM_SELECTOR = ".bets__item"
-FILTER_BTN_SELECTOR = "div.filter--btn"
+
+EVENT_DETAIL_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/x/{match_ext_id}/VS_1X2"
+
+# data-anchor -> our own market key. VS_OU is handled separately (multi-line).
+FLAT_MARKETS = {
+    "VS_1X2": "1X2",
+    "VS_GGNG": "BTTS",
+    "VS_HTFT": "HTFT",
+    "VS_CS": "CorrectScore",
+}
+ONEX2_LABEL_MAP = {"1": "Home", "X": "Draw", "2": "Away"}
 
 
 def _real_click(driver, element):
@@ -73,20 +110,10 @@ def _open_premier_league(driver):
     time.sleep(1)
 
 
-def _switch_market(driver, market_label):
-    btns = driver.find_elements(By.CSS_SELECTOR, FILTER_BTN_SELECTOR)
-    target = next((b for b in btns if b.text.strip() == market_label), None)
-    if target is None:
-        return False
-    _real_click(driver, target)
-    time.sleep(2)
-    return True
-
-
 def _extract_fixture_cards(driver):
     """Returns list of dicts: match_ext_id, team_a, team_b, kickoff_time,
-    prices (list of float, in on-screen column order), for every fixture
-    currently belonging to LEAGUE_FILTER.
+    for every fixture currently belonging to LEAGUE_FILTER. No prices here
+    any more -- odds all come from each fixture's own detail page.
     """
     soup = BeautifulSoup(driver.page_source, "html.parser")
     cards = []
@@ -111,37 +138,107 @@ def _extract_fixture_cards(driver):
         if kickoff_time:
             kickoff_time = re.sub(r"\s*●.*$", "", kickoff_time).strip()
 
-        bets_row = table_a.select_one(BETS_ROW_SELECTOR)
-        prices = []
-        if bets_row is not None:
-            for item in bets_row.select(BET_ITEM_SELECTOR):
-                text = item.get_text(strip=True)
-                try:
-                    prices.append(float(text))
-                except ValueError:
-                    prices.append(None)
-
         match_ext_id = (info.get("id") or "").replace("match_info_", "") or None
+        if match_ext_id is None:
+            continue
 
         cards.append({
             "match_ext_id": match_ext_id,
             "team_a": team_a,
             "team_b": team_b,
             "kickoff_time": kickoff_time,
-            "prices": prices,
         })
 
     return cards
 
 
+def _parse_flat_market(box):
+    """{selection_label: price} for a market whose rows are plain
+    elem+odd pairs (1X2, BTTS, HTFT, CorrectScore)."""
+    out = {}
+    for item in box.select("div.match-scores__item"):
+        if "selection" in (item.get("class") or []):
+            continue
+        elem = item.select_one("div.elem")
+        odd = item.select_one("div.odd")
+        if elem is None or odd is None:
+            continue
+        try:
+            out[elem.get_text(strip=True)] = float(odd.get_text(strip=True))
+        except ValueError:
+            continue
+    return out
+
+
+def _parse_ou_market(box):
+    """{goal_line: {"Over": price, "Under": price}}."""
+    out = {}
+    for row in box.select("div.match-scores__row"):
+        sel = row.select_one("div.match-scores__item.selection")
+        if sel is None:
+            continue
+        line = sel.get_text(strip=True)
+        line_odds = _parse_flat_market(row)
+        if line_odds:
+            out[line] = line_odds
+    return out
+
+
+def _scrape_event_odds(driver, match_ext_id):
+    """Loads one fixture's detail page directly by id and returns its odds
+    dict: {"1X2": {...}, "BTTS": {...}, "OU1.5": {...}, ..., "OU4.5": {...},
+    "CorrectScore": {...}, "HTFT": {...}}.
+    """
+    driver.get(EVENT_DETAIL_URL.format(match_ext_id=match_ext_id))
+    time.sleep(2.5)
+
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    boxes_by_anchor = {}
+    for box in soup.select("div.match__markets > div.accordion-box"):
+        toggle = box.select_one("div.accordion-toggle")
+        if toggle is None:
+            continue
+        anchor = toggle.get("data-anchor")
+        if anchor:
+            boxes_by_anchor[anchor] = box
+
+    odds = {}
+
+    onex2_box = boxes_by_anchor.get("VS_1X2")
+    if onex2_box is not None:
+        raw = _parse_flat_market(onex2_box)
+        mapped = {ONEX2_LABEL_MAP[k]: v for k, v in raw.items() if k in ONEX2_LABEL_MAP}
+        if mapped:
+            odds["1X2"] = mapped
+
+    for anchor, market_key in FLAT_MARKETS.items():
+        if anchor == "VS_1X2":
+            continue
+        box = boxes_by_anchor.get(anchor)
+        if box is None:
+            continue
+        raw = _parse_flat_market(box)
+        if not raw:
+            continue
+        if market_key == "CorrectScore":
+            raw = {k.replace(":", "-"): v for k, v in raw.items()}
+        odds[market_key] = raw
+
+    ou_box = boxes_by_anchor.get("VS_OU")
+    if ou_box is not None:
+        for line, line_odds in _parse_ou_market(ou_box).items():
+            odds[f"OU{line}"] = line_odds
+
+    return odds
+
+
 def scrape_fixtures_odds(driver):
-    """Loads the fixtures page, filters to Premier-Zoom, and scrapes
-    upcoming fixtures with 1X2 and BTTS odds.
+    """Loads the fixtures page to find every current Premier-Zoom fixture,
+    then loads each fixture's own detail page directly (by id) to pull
+    every market bet9ja offers for it in one pass.
 
     Returns list of dicts:
-        {match_ext_id, team_a, team_b, kickoff_time,
-         odds: {"1X2": {"Home": p, "Draw": p, "Away": p},
-                "BTTS": {"Yes": p, "No": p}}}
+        {match_ext_id, team_a, team_b, kickoff_time, odds: {market: {selection: price}}}
     match_number (position within the round) is NOT assigned here --
     the caller assigns it from scrape order, matching how round_number
     is inferred (this page has no round label to key off of).
@@ -150,15 +247,11 @@ def scrape_fixtures_odds(driver):
     time.sleep(4)
     _open_premier_league(driver)
 
-    base_cards = _extract_fixture_cards(driver)
-    by_id = {c["match_ext_id"]: c for c in base_cards if c["match_ext_id"]}
+    cards = _extract_fixture_cards(driver)
 
     fixtures = []
-    for c in base_cards:
-        prices = c["prices"]
-        odds = {}
-        if len(prices) >= 3 and all(p is not None for p in prices[:3]):
-            odds["1X2"] = {"Home": prices[0], "Draw": prices[1], "Away": prices[2]}
+    for c in cards:
+        odds = _scrape_event_odds(driver, c["match_ext_id"])
         fixtures.append({
             "match_ext_id": c["match_ext_id"],
             "team_a": c["team_a"],
@@ -166,13 +259,5 @@ def scrape_fixtures_odds(driver):
             "kickoff_time": c["kickoff_time"],
             "odds": odds,
         })
-
-    if _switch_market(driver, "Both Teams to Score"):
-        btts_cards = _extract_fixture_cards(driver)
-        btts_by_id = {c["match_ext_id"]: c for c in btts_cards if c["match_ext_id"]}
-        for f in fixtures:
-            bc = btts_by_id.get(f["match_ext_id"])
-            if bc and len(bc["prices"]) >= 2 and all(p is not None for p in bc["prices"][:2]):
-                f["odds"]["BTTS"] = {"Yes": bc["prices"][0], "No": bc["prices"][1]}
 
     return fixtures
