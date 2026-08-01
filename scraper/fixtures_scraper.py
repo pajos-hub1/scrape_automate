@@ -1,8 +1,5 @@
 """Upcoming fixtures + odds scraper.
 
-Live DOM findings this is built against (bet9ja mobile sportsbook, Zoom
-Soccer hub, verified 2026-07-31):
-
 - https://sports.bet9ja.com/mobile/sport/zoomsoccer/101 lists events across
   ALL zoom leagues combined (World Cup-Zoom, Premier-Zoom, Liga-Zoom, ...).
   There is no text-labelled league tab -- the selector is a row of
