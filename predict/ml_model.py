@@ -53,16 +53,23 @@ class MLPredictor(Predictor):
         self.scaler = StandardScaler().fit(X)
         Xs = self.scaler.transform(X)
 
-        # C=0.01 for the classifiers (not the old 0.5) -- retuned after the
-        # feature count grew from 36 to 42 (cross-season prior + shrinkage
-        # interactions), verified as a robust improvement across 5
-        # independently-seeded CV fold splits, not just one lucky split.
-        # The goal regressors' alpha=1.0 is untouched -- the same
-        # retuning-plus-shrinkage combination was NOT a consistent win for
-        # them (won some seeds, lost others), so there was nothing safe to
-        # change there. See predict/backtest.py for the same C.
-        self.clf_1x2 = LogisticRegression(max_iter=2000, C=0.01).fit(Xs, df["result_1x2"])
-        self.clf_btts = LogisticRegression(max_iter=2000, C=0.01).fit(Xs, df["btts"])
+        # L1 (l1_ratio=1.0, saga solver), C=0.05, for the classifiers -- not
+        # plain L2 any more. With 47 features now (cross-season prior +
+        # shrinkage interactions pushed it up from 36), L2's "shrink
+        # everything a little" was leaving real redundancy on the table;
+        # L1's sparsity (it actually zeroes out weak coefficients rather
+        # than just shrinking them) fits a sparser, more effective model --
+        # verified as a robust win over the best L2 config across 5
+        # independently-seeded CV fold splits (wins 4/5 outright on both
+        # 1X2 and BTTS, ties the 5th on 1X2). `penalty=` is deprecated in
+        # this sklearn version in favor of `l1_ratio` directly -- l1_ratio=1
+        # is pure L1, 0 would be pure L2.
+        # The goal regressors' alpha=1.0 is untouched -- neither the C/
+        # penalty retuning nor the shrinkage features were a consistent win
+        # for them (won some seeds, lost others), so there was nothing safe
+        # to change there. See predict/backtest.py for the same config.
+        self.clf_1x2 = LogisticRegression(max_iter=5000, C=0.05, l1_ratio=1.0, solver="saga").fit(Xs, df["result_1x2"])
+        self.clf_btts = LogisticRegression(max_iter=5000, C=0.05, l1_ratio=1.0, solver="saga").fit(Xs, df["btts"])
         self.reg_home_goals = PoissonRegressor(alpha=1.0, max_iter=2000).fit(Xs, df["ft_a"])
         self.reg_away_goals = PoissonRegressor(alpha=1.0, max_iter=2000).fit(Xs, df["ft_b"])
 
