@@ -197,9 +197,14 @@ def get_round_history(conn, max_reconciled=20):
     return entries
 
 
-def get_accuracy_trend(conn, model_version=None):
-    """Overall (all-markets-blended) accuracy per actual round, chronological.
-    model_version=None blends every live model together.
+def get_accuracy_trend(conn, model_version=None, market=None):
+    """Accuracy per actual round, chronological, optionally scoped to one
+    model and/or one market. model_version=None blends every live model
+    together; market=None blends every market together -- blending markets
+    is misleading (CorrectScore's ~13% baseline drags a blended line down
+    next to 1X2's ~50%), so the dashboard now always passes a specific
+    market; the None case remains for any other caller that wants the old
+    fully-blended behavior.
 
     Grouped by (season_id, round_number), NOT round_number alone -- round
     numbers reset to 1 every season, so grouping by round_number alone
@@ -212,10 +217,16 @@ def get_accuracy_trend(conn, model_version=None):
     query = """SELECT m.season_id, m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
                FROM prediction_results pr
                JOIN matches m ON m.match_id = pr.match_ref"""
-    params = ()
+    where, params = [], []
     if model_version is not None:
-        query += " JOIN predictions p ON p.prediction_id = pr.prediction_id WHERE p.model_version = ?"
-        params = (model_version,)
+        query += " JOIN predictions p ON p.prediction_id = pr.prediction_id"
+        where.append("p.model_version = ?")
+        params.append(model_version)
+    if market is not None:
+        where.append("pr.market = ?")
+        params.append(market)
+    if where:
+        query += " WHERE " + " AND ".join(where)
     query += " GROUP BY m.season_id, m.round_number ORDER BY m.season_id, m.round_number"
     rows = conn.execute(query, params).fetchall()
     return [

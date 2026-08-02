@@ -94,6 +94,15 @@ ODDS_FIELD_MAP = {
     ("BTTS", "No"): "odds_btts_no_prob",
     ("OU2.5", "Over"): "odds_over25_prob",
     ("OU2.5", "Under"): "odds_under25_prob",
+    ("OU1.5", "Over"): "odds_over15_prob",
+    ("OU1.5", "Under"): "odds_under15_prob",
+    ("HT_1X2", "Home"): "odds_ht_home_prob",
+    ("HT_1X2", "Draw"): "odds_ht_draw_prob",
+    ("HT_1X2", "Away"): "odds_ht_away_prob",
+    ("HT_OU0.5", "Over"): "odds_ht_over05_prob",
+    ("HT_OU0.5", "Under"): "odds_ht_under05_prob",
+    ("HT_OU1.5", "Over"): "odds_ht_over15_prob",
+    ("HT_OU1.5", "Under"): "odds_ht_under15_prob",
 }
 
 

@@ -12,7 +12,7 @@ from track.report import accuracy_stats, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
 
-MARKET_ORDER = ["1X2", "BTTS", "OU2.5", "CorrectScore", "HT_1X2", "HT_OU1.5"]
+MARKET_ORDER = ["1X2", "BTTS", "OU2.5", "OU1.5", "CorrectScore", "HT_1X2", "HT_OU1.5", "HT_OU0.5"]
 MODEL_SHORT = {"baseline_v0": "Base", "ml_v1": "ML"}
 
 
@@ -43,19 +43,29 @@ def _render_meta_section(meta):
     return f'<div class="tiles">{"".join(tiles)}</div>'
 
 
-def _render_overall_tile(stats):
-    overall_n = sum(s["n"] for s in stats.values())
-    overall_correct = sum(s["model_correct"] for s in stats.values())
-    if overall_n == 0:
-        return _stat_tile("Overall accuracy", "n/a", "no reconciled predictions yet")
-    acc = overall_correct / overall_n
-    return _stat_tile("Overall accuracy", f"{acc * 100:.1f}%",
-                       f"{overall_correct}/{overall_n} predictions, all markets AND models blended")
+def _render_market_tiles(stats):
+    """One accuracy tile per market (still blended across models -- that
+    part's fine, model comparison lives in its own section below) instead
+    of a single 'Overall' number. A blended-across-MARKETS number is
+    actively misleading: CorrectScore's ~13% ceiling (it's an exact-match
+    36-way pick) drags a combined figure down next to 1X2's ~50%, so the
+    single tile was never really answering "is this working," just
+    averaging two different scales together."""
+    tiles = []
+    for market in MARKET_ORDER:
+        s = stats.get(market)
+        if not s or not s["n"]:
+            tiles.append(_stat_tile(MARKET_LABELS[market], "n/a", "no reconciled predictions yet"))
+            continue
+        acc = s["model_correct"] / s["n"]
+        tiles.append(_stat_tile(MARKET_LABELS[market], f"{acc * 100:.1f}%",
+                                 f"{s['model_correct']}/{s['n']} predictions, both models blended"))
+    return "".join(tiles)
 
 
 MARKET_LABELS = {
-    "1X2": "1X2", "BTTS": "BTTS", "OU2.5": "O/U 2.5",
-    "CorrectScore": "Correct Score", "HT_1X2": "HT 1X2", "HT_OU1.5": "HT O/U 1.5",
+    "1X2": "1X2", "BTTS": "BTTS", "OU2.5": "O/U 2.5", "OU1.5": "O/U 1.5",
+    "CorrectScore": "Correct Score", "HT_1X2": "HT 1X2", "HT_OU1.5": "HT O/U 1.5", "HT_OU0.5": "HT O/U 0.5",
 }
 
 
@@ -161,6 +171,19 @@ def _render_verdict_summary(stats):
         if vs:
             lines.append(f'<li><strong>{MARKET_LABELS[market]}</strong>: {", ".join(vs)}</li>')
     return f'<ul class="verdicts">{"".join(lines)}</ul>' if lines else ""
+
+
+def _render_market_trend_sections(conn):
+    """One trend line per market instead of a single all-markets-blended
+    line -- same reasoning as _render_market_tiles: CorrectScore sitting at
+    ~13% would flatten every other market's real movement into noise on a
+    shared 0-100% line blended together with them."""
+    parts = []
+    for market in MARKET_ORDER:
+        trend = get_accuracy_trend(conn, market=market)
+        parts.append(f'<h3>{html.escape(MARKET_LABELS[market])}</h3>')
+        parts.append(accuracy_trend_chart(trend))
+    return "".join(parts)
 
 
 def _render_model_accuracy_sections(models_and_stats):
@@ -294,8 +317,12 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 {meta_section}
 
 <section>
-  <h2>Overall</h2>
-  <div class="tiles">{overall_tile}</div>
+  <h2>Accuracy by market</h2>
+  <p class="section-note">Both live models blended -- see "Accuracy by market" below for the
+  per-model breakdown. Markets aren't blended together here: CorrectScore's exact-match
+  difficulty sits on a totally different scale from a three-way pick like 1X2, so averaging them
+  into one number would hide more than it shows.</p>
+  <div class="tiles">{market_tiles}</div>
 </section>
 
 <section>
@@ -309,24 +336,28 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
-  <h2>Accuracy trend across rounds (all models blended)</h2>
-  {trend_chart_html}
+  <h2>Accuracy trend across rounds, per market</h2>
+  <p class="section-note">Both live models blended, one line per market -- see above for why
+  markets aren't combined into a single line.</p>
+  {market_trend_html}
 </section>
 
 <footer>
   <p><strong>Reading this dashboard:</strong> two models run live in parallel and get tracked
   independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
-  BTTS) and a Poisson goal-expectation model elsewhere (O/U 2.5, Correct Score, HT markets) -- not a
-  trained model. <code>ml_v1</code> is a real logistic-regression (1X2, BTTS) + Poisson-regression
-  (goals) model, trained only on team form/H2H/season-rate stats -- deliberately NOT on odds, so
-  "beats odds" stays a meaningful comparison rather than a circular one. A 5-fold cross-validated
-  backtest (540 historical matches) showed ml_v1 modestly beating dumb baselines on 1X2 and HT_1X2, but
-  actually losing to them on OU2.5 and CorrectScore -- it is not yet clearly better than the placeholder
-  overall, hence running both live rather than replacing one with the other. "Baseline" (the reference
-  column, not baseline_v0 the model) is a dumb non-model reference: always-Home for 1X2, most-common
-  outcome so far for everything else. "Odds-implied" only applies to 1X2/BTTS -- Over/Under odds were
-  never successfully scraped (a known gap from the results scraper build). Small sample sizes make any
-  of these percentages noisy; treat them as directional until many more rounds have been reconciled.</p>
+  BTTS, O/U 2.5, O/U 1.5, HT 1X2, HT O/U 1.5/0.5) and a Poisson goal-expectation model elsewhere
+  (Correct Score) -- not a trained model. <code>ml_v1</code> is a real logistic-regression (1X2, BTTS)
+  + Poisson-regression (goals) model, trained only on team form/H2H/season-rate/cross-season-strength
+  stats -- deliberately NOT on odds, so "beats odds" stays a meaningful comparison rather than a
+  circular one. A 5-fold cross-validated backtest (2,300+ historical matches) shows ml_v1 beating dumb
+  baselines on 1X2, CorrectScore, and HT_1X2, still losing on OU2.5 -- it is not yet clearly better
+  than the placeholder overall, hence running both live rather than replacing one with the other.
+  "Baseline" (the reference column, not baseline_v0 the model) is a dumb non-model reference:
+  always-Home for 1X2, most-common outcome so far for everything else. "Odds-implied" now applies to
+  every market, including the 1st-half markets (a separate page/tab on bet9ja, easy to miss -- see
+  scraper/fixtures_scraper.py) and CorrectScore (reads straight off the scraped full grid). Small
+  sample sizes make any of these percentages noisy; treat them as directional until many more rounds
+  have been reconciled.</p>
   <p>Round numbers on the "upcoming" panel of the round browser are the pipeline's own best-guess
   inference (the live round read straight off the site, plus one -- see scraper/results_scraper.py), made
   against a fixtures page that carries no round label at all -- it can still occasionally be off. Use the
@@ -375,18 +406,17 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
-    stats = accuracy_stats(conn)  # blended across models -- used only for the headline "Overall" tile
+    stats = accuracy_stats(conn)  # blended across models -- used for the per-market tiles
     models_and_stats = get_models_and_stats(conn)
     history = get_round_history(conn)
-    trend = get_accuracy_trend(conn)
 
     html_out = PAGE_TEMPLATE.format(
         generated_at=meta["generated_at"],
         meta_section=_render_meta_section(meta),
-        overall_tile=_render_overall_tile(stats),
+        market_tiles=_render_market_tiles(stats),
         round_browser_html=_render_round_browser(history),
         model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
-        trend_chart_html=accuracy_trend_chart(trend),
+        market_trend_html=_render_market_trend_sections(conn),
     )
 
     out_path = Path(out_path)

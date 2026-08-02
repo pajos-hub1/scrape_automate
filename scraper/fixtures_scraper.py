@@ -77,13 +77,27 @@ TEAM_SELECTOR = ".match-content__row--team"
 INFO_TIME_SELECTOR = ".match-content__row--info"
 
 EVENT_DETAIL_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/x/{match_ext_id}/VS_1X2"
+# The event detail page has several TABS (Popular Markets, 1st Half Markets,
+# Goal Markets, Home/Away, Combined Markets, Corner Markets) -- each swaps
+# out div.match__markets' entire contents rather than adding to it, so a
+# single page load only ever sees one tab's markets. Popular Markets is the
+# default tab (reached by /VS_1X2 above); 1st Half Markets -- confirmed via
+# live recon -- has a REAL "1st Half - 1X2" market (not derivable from HTFT,
+# an actual bookmaker-priced market) and "Halftime - Over/Under" at FIVE
+# goal lines (0.5/1.5/2.5/3.5/4.5) -- both markets previously assumed not to
+# exist on bet9ja at all. Same direct-URL trick works for this tab too
+# (confirmed: any anchor within a tab's own market group loads that whole
+# group, garbage slugs and all), so it's a second page load per fixture
+# rather than a click.
+EVENT_DETAIL_1ST_HALF_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/x/{match_ext_id}/VS_HTOU"
 
-# data-anchor -> our own market key. VS_OU is handled separately (multi-line).
+# data-anchor -> our own market key. VS_OU/VS_HTOU are handled separately (multi-line).
 FLAT_MARKETS = {
     "VS_1X2": "1X2",
     "VS_GGNG": "BTTS",
     "VS_HTFT": "HTFT",
     "VS_CS": "CorrectScore",
+    "VS_1X21T": "HT_1X2",
 }
 ONEX2_LABEL_MAP = {"1": "Home", "X": "Draw", "2": "Away"}
 
@@ -181,14 +195,10 @@ def _parse_ou_market(box):
     return out
 
 
-def _scrape_event_odds(driver, match_ext_id):
-    """Loads one fixture's detail page directly by id and returns its odds
-    dict: {"1X2": {...}, "BTTS": {...}, "OU1.5": {...}, ..., "OU4.5": {...},
-    "CorrectScore": {...}, "HTFT": {...}}.
-    """
-    driver.get(EVENT_DETAIL_URL.format(match_ext_id=match_ext_id))
-    time.sleep(2.5)
+ONEX2_MARKETS = {"VS_1X2": "1X2", "VS_1X21T": "HT_1X2"}
 
+
+def _boxes_by_anchor(driver):
     soup = BeautifulSoup(driver.page_source, "html.parser")
     boxes_by_anchor = {}
     for box in soup.select("div.match__markets > div.accordion-box"):
@@ -198,18 +208,38 @@ def _scrape_event_odds(driver, match_ext_id):
         anchor = toggle.get("data-anchor")
         if anchor:
             boxes_by_anchor[anchor] = box
+    return boxes_by_anchor
 
+
+def _scrape_event_odds(driver, match_ext_id):
+    """Loads one fixture's detail page (two tabs: Popular Markets, then 1st
+    Half Markets) directly by id and returns its odds dict:
+    {"1X2": {...}, "BTTS": {...}, "OU1.5": {...}, ..., "OU4.5": {...},
+    "CorrectScore": {...}, "HTFT": {...}, "HT_1X2": {...},
+    "HT_OU0.5": {...}, ..., "HT_OU4.5": {...}}.
+    """
+    driver.get(EVENT_DETAIL_URL.format(match_ext_id=match_ext_id))
+    time.sleep(2.5)
+    popular_boxes = _boxes_by_anchor(driver)
+
+    driver.get(EVENT_DETAIL_1ST_HALF_URL.format(match_ext_id=match_ext_id))
+    time.sleep(2.5)
+    first_half_boxes = _boxes_by_anchor(driver)
+
+    boxes_by_anchor = {**popular_boxes, **first_half_boxes}
     odds = {}
 
-    onex2_box = boxes_by_anchor.get("VS_1X2")
-    if onex2_box is not None:
-        raw = _parse_flat_market(onex2_box)
+    for anchor, market_key in ONEX2_MARKETS.items():
+        box = boxes_by_anchor.get(anchor)
+        if box is None:
+            continue
+        raw = _parse_flat_market(box)
         mapped = {ONEX2_LABEL_MAP[k]: v for k, v in raw.items() if k in ONEX2_LABEL_MAP}
         if mapped:
-            odds["1X2"] = mapped
+            odds[market_key] = mapped
 
     for anchor, market_key in FLAT_MARKETS.items():
-        if anchor == "VS_1X2":
+        if anchor in ONEX2_MARKETS:
             continue
         box = boxes_by_anchor.get(anchor)
         if box is None:
@@ -225,6 +255,11 @@ def _scrape_event_odds(driver, match_ext_id):
     if ou_box is not None:
         for line, line_odds in _parse_ou_market(ou_box).items():
             odds[f"OU{line}"] = line_odds
+
+    htou_box = boxes_by_anchor.get("VS_HTOU")
+    if htou_box is not None:
+        for line, line_odds in _parse_ou_market(htou_box).items():
+            odds[f"HT_OU{line}"] = line_odds
 
     return odds
 

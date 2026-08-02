@@ -56,6 +56,12 @@ def run_backtest(conn):
     results["OU2.5"] = {"n": n, "model_acc": (pred_over25 == actual_over25).mean(),
                          "baseline_acc": baseline_ou25, "baseline_label": "most-common"}
 
+    actual_over15 = actual_total > 1.5
+    pred_over15 = np.array([poisson_over_under(h + a, 1.5) for h, a in zip(pred_home, pred_away)]) > 0.5
+    baseline_ou15 = max(actual_over15.mean(), 1 - actual_over15.mean())
+    results["OU1.5"] = {"n": n, "model_acc": (pred_over15 == actual_over15).mean(),
+                         "baseline_acc": baseline_ou15, "baseline_label": "most-common"}
+
     correct_hits = 0
     for i in range(n):
         grid = score_grid(pred_home[i], pred_away[i])
@@ -90,9 +96,15 @@ def run_backtest(conn):
 
         ht_actual_over15 = ht_actual_total > 1.5
         ht_pred_over15 = np.array([poisson_over_under(h + a, 1.5) for h, a in zip(ht_pred_home, ht_pred_away)]) > 0.5
-        baseline_ht_ou = max(ht_actual_over15.mean(), 1 - ht_actual_over15.mean())
+        baseline_ht_ou15 = max(ht_actual_over15.mean(), 1 - ht_actual_over15.mean())
         results["HT_OU1.5"] = {"n": n_ht, "model_acc": (ht_pred_over15 == ht_actual_over15).mean(),
-                                "baseline_acc": baseline_ht_ou, "baseline_label": "most-common"}
+                                "baseline_acc": baseline_ht_ou15, "baseline_label": "most-common"}
+
+        ht_actual_over05 = ht_actual_total > 0.5
+        ht_pred_over05 = np.array([poisson_over_under(h + a, 0.5) for h, a in zip(ht_pred_home, ht_pred_away)]) > 0.5
+        baseline_ht_ou05 = max(ht_actual_over05.mean(), 1 - ht_actual_over05.mean())
+        results["HT_OU0.5"] = {"n": n_ht, "model_acc": (ht_pred_over05 == ht_actual_over05).mean(),
+                                "baseline_acc": baseline_ht_ou05, "baseline_label": "most-common"}
 
     return results
 
@@ -101,7 +113,7 @@ def print_backtest(results):
     header = f"{'Market':14s} {'N':>4s} {'ml_v1':>8s} {'Baseline':>10s}   Verdict"
     print(header)
     print("-" * len(header))
-    for market in ["1X2", "BTTS", "OU2.5", "CorrectScore", "HT_1X2", "HT_OU1.5"]:
+    for market in ["1X2", "BTTS", "OU2.5", "OU1.5", "CorrectScore", "HT_1X2", "HT_OU1.5", "HT_OU0.5"]:
         r = results.get(market)
         if not r:
             continue

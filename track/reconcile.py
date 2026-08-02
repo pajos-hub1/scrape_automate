@@ -25,12 +25,14 @@ def actual_labels(match):
         "1X2": _ft_result(ft_a, ft_b),
         "BTTS": "Yes" if (ft_a > 0 and ft_b > 0) else "No",
         "OU2.5": "Over" if total_ft > 2.5 else "Under",
+        "OU1.5": "Over" if total_ft > 1.5 else "Under",
         "CorrectScore": f"{ft_a}-{ft_b}",
     }
     if ht_a is not None and ht_b is not None:
         total_ht = ht_a + ht_b
         labels["HT_1X2"] = _ft_result(ht_a, ht_b)
         labels["HT_OU1.5"] = "Over" if total_ht > 1.5 else "Under"
+        labels["HT_OU0.5"] = "Over" if total_ht > 0.5 else "Under"
     return labels
 
 
@@ -46,7 +48,8 @@ def compute_dynamic_baselines(conn):
         "SELECT ft_a, ft_b, ht_a, ht_b FROM matches WHERE ft_a IS NOT NULL"
     ).fetchall()
 
-    counters = {market: Counter() for market in ["BTTS", "OU2.5", "CorrectScore", "HT_1X2", "HT_OU1.5"]}
+    counters = {market: Counter() for market in
+                ["BTTS", "OU2.5", "OU1.5", "CorrectScore", "HT_1X2", "HT_OU1.5", "HT_OU0.5"]}
     for m in matches:
         for market, label in actual_labels(dict(m)).items():
             if market != "1X2":
@@ -78,34 +81,34 @@ def _latest_odds_map(conn, fixture_id):
     return {(r["market"], r["selection"]): r["implied_prob"] for r in rows}
 
 
+# market -> (odds_map market key, [selection labels]) for every market whose
+# odds_implied_label is a plain "which priced selection is favored" read.
+# HT_1X2 is bet9ja's real standalone "1st Half - 1X2" market (a separate
+# page/tab from the main market set -- see scraper/fixtures_scraper.py's
+# EVENT_DETAIL_1ST_HALF_URL), not derived from anything. Same for the two
+# HT O/U lines -- bet9ja's "Halftime - Over/Under" market, also on that
+# tab, previously wrongly assumed not to exist at all.
+_SIMPLE_MARKETS = {
+    "1X2": ("1X2", ("Home", "Draw", "Away")),
+    "BTTS": ("BTTS", ("Yes", "No")),
+    "OU2.5": ("OU2.5", ("Over", "Under")),
+    "OU1.5": ("OU1.5", ("Over", "Under")),
+    "HT_1X2": ("HT_1X2", ("Home", "Draw", "Away")),
+    "HT_OU1.5": ("HT_OU1.5", ("Over", "Under")),
+    "HT_OU0.5": ("HT_OU0.5", ("Over", "Under")),
+}
+
+
 def odds_implied_label(odds_map, market):
     """What the bookmaker's own odds favored pre-kickoff, for every market
-    we predict. CorrectScore reads straight off the scraped full grid.
-    HT_1X2 has no standalone market on bet9ja -- it's derived by summing
-    the HTFT grid's implied probabilities into the three HT-result buckets
-    (e.g. Home = "1/1" + "1/X" + "1/2", i.e. every HTFT combo where the
-    halftime leg is a home lead), which is a reasonable read of what the
-    market as a whole implies about the HT result even though no single
-    priced selection is "just" that. HT_OU1.5 stays None -- bet9ja has no
-    market (standalone or derivable) for halftime goal totals at all."""
-    if market == "1X2":
-        vals = {"Home": odds_map.get(("1X2", "Home")),
-                "Draw": odds_map.get(("1X2", "Draw")),
-                "Away": odds_map.get(("1X2", "Away"))}
-    elif market == "BTTS":
-        vals = {"Yes": odds_map.get(("BTTS", "Yes")), "No": odds_map.get(("BTTS", "No"))}
-    elif market == "OU2.5":
-        vals = {"Over": odds_map.get(("OU2.5", "Over")), "Under": odds_map.get(("OU2.5", "Under"))}
+    we predict. CorrectScore reads straight off the scraped full grid;
+    everything else in _SIMPLE_MARKETS reads its own directly-priced
+    selections."""
+    if market in _SIMPLE_MARKETS:
+        odds_market, selections = _SIMPLE_MARKETS[market]
+        vals = {sel: odds_map.get((odds_market, sel)) for sel in selections}
     elif market == "CorrectScore":
         vals = {sel: prob for (mkt, sel), prob in odds_map.items() if mkt == "CorrectScore"}
-    elif market == "HT_1X2":
-        buckets = {"Home": ("1/1", "1/X", "1/2"), "Draw": ("X/1", "X/X", "X/2"), "Away": ("2/1", "2/X", "2/2")}
-        vals = {}
-        for label, keys in buckets.items():
-            probs = [odds_map.get(("HTFT", k)) for k in keys]
-            if any(p is None for p in probs):
-                return None
-            vals[label] = sum(probs)
     else:
         return None
 

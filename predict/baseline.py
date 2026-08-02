@@ -3,29 +3,28 @@ deliberately deferred decision (per the project brief); this exists so the
 prediction pipeline is testable end-to-end, and it doubles as one of the
 "dumb baselines to beat" Stage 4 needs anyway.
 
-1X2:          bookmaker odds-implied probabilities when available
-              (de-margined), else the historical base rates (42/34/24
-              home/draw/away) nudged by the season-to-date points-rate
-              difference between the two sides.
-BTTS:         bookmaker odds-implied probabilities when available, else a
-              rough per-side scoring likelihood from attack/defense season
-              averages.
-OU2.5:        bookmaker odds-implied probabilities when available, else an
-              independent-Poisson model over each side's expected goals.
-CorrectScore: independent-Poisson model, reporting the top scorelines --
-              not odds-informed yet, even though CorrectScore odds are now
-              scraped (see track/reconcile.py's odds_implied_label for
-              where those are actually used: the dashboard's market-implied
-              comparison column, not this model).
-HT_1X2 /
-HT_OU1.5:     half-time goals aren't separately feature-engineered (Stage 2
-              only computed FT-based features), so HT expected goals are
-              approximated by scaling the FT Poisson lambdas by
-              HT_FT_GOAL_RATIO -- measured directly from this project's own
-              scraped data (420 matches: avg 1.23 HT goals vs 2.46 FT
-              goals, ratio exactly 0.5). 1.5 is used as the HT goals line
-              since it's the most balanced split in that same data
-              (65% under / 35% over), unlike the lopsided 0.5 line.
+1X2 / HT_1X2:  bookmaker odds-implied probabilities when available
+               (de-margined), else the historical base rates (42/34/24
+               home/draw/away for FT; HT falls back to the same shape
+               scaled through the HT Poisson grid) nudged by season-to-date
+               points-rate difference between the two sides.
+BTTS:          bookmaker odds-implied probabilities when available, else a
+               rough per-side scoring likelihood from attack/defense season
+               averages.
+OU2.5 / OU1.5 /
+HT_OU1.5 / HT_OU0.5:
+               bookmaker odds-implied probabilities when available, else an
+               independent-Poisson model over each side's expected goals
+               (HT lambdas are the FT lambdas scaled by HT_FT_GOAL_RATIO).
+               All four of these are real bet9ja markets -- HT_OU used to
+               be assumed Poisson-only until the "1st Half Markets" tab
+               (a separate page load, see scraper/fixtures_scraper.py) was
+               found to price it directly, same as HT_1X2.
+CorrectScore:  independent-Poisson model, reporting the top scorelines --
+               not odds-informed yet, even though CorrectScore odds are now
+               scraped (see track/reconcile.py's odds_implied_label for
+               where those are actually used: the dashboard's market-implied
+               comparison column, not this model).
 """
 from predict.common import market_result as _market
 from predict.common import normalize as _normalize
@@ -48,10 +47,14 @@ class BaselinePredictor(Predictor):
         return {
             "1X2": self._predict_1x2(row),
             "BTTS": self._predict_btts(row),
-            "OU2.5": self._predict_ou25(row, lambda_home, lambda_away),
+            "OU2.5": self._predict_ou(row, lambda_home, lambda_away, 2.5, "odds_over25_prob", "odds_under25_prob"),
+            "OU1.5": self._predict_ou(row, lambda_home, lambda_away, 1.5, "odds_over15_prob", "odds_under15_prob"),
             "CorrectScore": _market(top_scorelines(grid)),
-            "HT_1X2": _market(_normalize(result_probs_from_grid(ht_grid))),
-            "HT_OU1.5": self._predict_ht_ou15(lambda_home, lambda_away),
+            "HT_1X2": self._predict_ht_1x2(row, ht_grid),
+            "HT_OU1.5": self._predict_ht_ou(row, lambda_home, lambda_away, 1.5,
+                                             "odds_ht_over15_prob", "odds_ht_under15_prob"),
+            "HT_OU0.5": self._predict_ht_ou(row, lambda_home, lambda_away, 0.5,
+                                             "odds_ht_over05_prob", "odds_ht_under05_prob"),
         }
 
     def _expected_goals(self, row):
@@ -77,6 +80,14 @@ class BaselinePredictor(Predictor):
             probs = _normalize({"Home": HOME_BASE + diff, "Draw": DRAW_BASE, "Away": AWAY_BASE - diff})
         return _market(probs)
 
+    def _predict_ht_1x2(self, row, ht_grid):
+        oh, od, oa = row.get("odds_ht_home_prob"), row.get("odds_ht_draw_prob"), row.get("odds_ht_away_prob")
+        if oh is not None and od is not None and oa is not None:
+            probs = _normalize({"Home": oh, "Draw": od, "Away": oa})
+        else:
+            probs = _normalize(result_probs_from_grid(ht_grid))
+        return _market(probs)
+
     def _predict_btts(self, row):
         oy, on = row.get("odds_btts_yes_prob"), row.get("odds_btts_no_prob")
         if oy is not None and on is not None:
@@ -92,17 +103,21 @@ class BaselinePredictor(Predictor):
             probs = _normalize({"Yes": p_yes, "No": 1 - p_yes})
         return _market(probs)
 
-    def _predict_ou25(self, row, lambda_home, lambda_away):
-        oo, ou = row.get("odds_over25_prob"), row.get("odds_under25_prob")
+    def _predict_ou(self, row, lambda_home, lambda_away, line, over_key, under_key):
+        oo, ou = row.get(over_key), row.get(under_key)
         if oo is not None and ou is not None:
             probs = _normalize({"Over": oo, "Under": ou})
         else:
-            p_over = poisson_over_under(lambda_home + lambda_away, 2.5)
+            p_over = poisson_over_under(lambda_home + lambda_away, line)
             probs = _normalize({"Over": p_over, "Under": 1 - p_over})
         return _market(probs)
 
-    def _predict_ht_ou15(self, lambda_home, lambda_away):
-        lam_ht_total = (lambda_home + lambda_away) * HT_FT_GOAL_RATIO
-        p_over = poisson_over_under(lam_ht_total, 1.5)
-        probs = _normalize({"Over": p_over, "Under": 1 - p_over})
+    def _predict_ht_ou(self, row, lambda_home, lambda_away, line, over_key, under_key):
+        oo, ou = row.get(over_key), row.get(under_key)
+        if oo is not None and ou is not None:
+            probs = _normalize({"Over": oo, "Under": ou})
+        else:
+            lam_ht_total = (lambda_home + lambda_away) * HT_FT_GOAL_RATIO
+            p_over = poisson_over_under(lam_ht_total, line)
+            probs = _normalize({"Over": p_over, "Under": 1 - p_over})
         return _market(probs)

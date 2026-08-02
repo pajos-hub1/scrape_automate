@@ -120,7 +120,15 @@ CREATE TABLE IF NOT EXISTS features (
     -- Odds-implied probabilities, captured closest to feature computation time.
     odds_home_prob REAL, odds_draw_prob REAL, odds_away_prob REAL,
     odds_over25_prob REAL, odds_under25_prob REAL,
+    odds_over15_prob REAL, odds_under15_prob REAL,
     odds_btts_yes_prob REAL, odds_btts_no_prob REAL,
+
+    -- Real 1st-half odds (bet9ja's "1st Half Markets" tab -- a separate
+    -- page load from the main market set, see scraper/fixtures_scraper.py).
+    -- HT_1X2 is a genuine standalone market, not derived from HTFT.
+    odds_ht_home_prob REAL, odds_ht_draw_prob REAL, odds_ht_away_prob REAL,
+    odds_ht_over05_prob REAL, odds_ht_under05_prob REAL,
+    odds_ht_over15_prob REAL, odds_ht_under15_prob REAL,
 
     computed_at    TEXT NOT NULL,
     UNIQUE (match_ref),
@@ -169,6 +177,10 @@ CREATE TABLE IF NOT EXISTS prediction_results (
 FEATURES_MIGRATION_COLUMNS = {
     "a_prior_pts_rate": "REAL", "a_prior_gf_avg": "REAL", "a_prior_ga_avg": "REAL",
     "b_prior_pts_rate": "REAL", "b_prior_gf_avg": "REAL", "b_prior_ga_avg": "REAL",
+    "odds_over15_prob": "REAL", "odds_under15_prob": "REAL",
+    "odds_ht_home_prob": "REAL", "odds_ht_draw_prob": "REAL", "odds_ht_away_prob": "REAL",
+    "odds_ht_over05_prob": "REAL", "odds_ht_under05_prob": "REAL",
+    "odds_ht_over15_prob": "REAL", "odds_ht_under15_prob": "REAL",
 }
 
 

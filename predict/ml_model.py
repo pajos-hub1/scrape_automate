@@ -86,13 +86,17 @@ class MLPredictor(Predictor):
         ht_grid = score_grid(lambda_home * HT_FT_GOAL_RATIO, lambda_away * HT_FT_GOAL_RATIO)
 
         p_over25 = poisson_over_under(lambda_home + lambda_away, 2.5)
+        p_over15 = poisson_over_under(lambda_home + lambda_away, 1.5)
         p_over_ht15 = poisson_over_under((lambda_home + lambda_away) * HT_FT_GOAL_RATIO, 1.5)
+        p_over_ht05 = poisson_over_under((lambda_home + lambda_away) * HT_FT_GOAL_RATIO, 0.5)
 
         return {
             "1X2": _market(probs_1x2),
             "BTTS": _market(probs_btts),
             "OU2.5": _market({"Over": p_over25, "Under": 1 - p_over25}),
+            "OU1.5": _market({"Over": p_over15, "Under": 1 - p_over15}),
             "CorrectScore": _market(top_scorelines(grid)),
             "HT_1X2": _market(result_probs_from_grid(ht_grid)),
             "HT_OU1.5": _market({"Over": p_over_ht15, "Under": 1 - p_over_ht15}),
+            "HT_OU0.5": _market({"Over": p_over_ht05, "Under": 1 - p_over_ht05}),
         }
