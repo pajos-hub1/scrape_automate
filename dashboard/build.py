@@ -75,6 +75,13 @@ PENDING_NOTES = {
                 "outcome not yet known, will fill in once reconciled"),
 }
 
+NO_PREDICTION_NOTE = (
+    "No prediction was ever made for this round -- its fixture preview window was missed entirely "
+    "(the fixtures page only ever shows the single current upcoming round, with no archive, so a "
+    "scheduling gap long enough can skip a round's preview before any cycle catches it). The result "
+    "below is real; there's just nothing to compare it against."
+)
+
 
 def _render_round_panel(entry, index, total):
     """One round's table -- an unreconciled batch (upcoming or pending) or
@@ -108,6 +115,20 @@ def _render_round_panel(entry, index, total):
             f'<tbody>{"".join(rows)}</tbody></table></div>'
         )
         label = f'Round {entry["round_number"]} ({status})'
+    elif status == "no_prediction":
+        rows = []
+        for m in entry["matches"]:
+            score = f'{m["ft_a"]}-{m["ft_b"]}' + (f' (HT {m["ht_a"]}-{m["ht_b"]})' if m["ht_a"] is not None else "")
+            rows.append(
+                f'<tr><td class="teams">{html.escape(m["team_a"])} <span class="vs">vs</span> '
+                f'{html.escape(m["team_b"])}</td><td class="score">{score}</td></tr>'
+            )
+        body = (
+            f'<p class="section-note">{NO_PREDICTION_NOTE}</p>'
+            f'<div class="table-scroll"><table><thead><tr><th>Fixture</th><th>Result</th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>'
+        )
+        label = f'Round {entry["round_number"]} (no prediction)'
     else:
         rows = []
         for m in entry["matches"]:

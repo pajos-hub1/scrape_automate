@@ -157,19 +157,62 @@ def get_reconciled_round(conn, season_id, round_number):
             "sort_key": sort_key, "matches": list(matches.values())}
 
 
+def get_unpredicted_rounds(conn, max_results=20):
+    """(season_id, round_number) rounds with real results in `matches` but
+    ZERO predictions ever made against them -- happens when a fixture's
+    preview window gets skipped entirely (a scheduling gap long enough that
+    the fixtures page -- which only ever shows the single current upcoming
+    round, no archive -- advances past a round before any cycle scrapes it;
+    see .github/workflows/cycle.yml). Unlike a "pending" batch (predicted,
+    just not reconciled yet), there is no prediction to eventually
+    reconcile here -- this is a genuine, permanent gap. The honest state is
+    to show it as a real round with a real score and no prediction, not to
+    silently skip the round number the way it did before this existed.
+    """
+    rows = conn.execute(
+        """SELECT DISTINCT m.season_id, m.round_number
+           FROM matches m
+           WHERE m.ft_a IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM prediction_results pr WHERE pr.match_ref = m.match_id)
+           ORDER BY m.season_id DESC, m.round_number DESC
+           LIMIT ?""",
+        (max_results,),
+    ).fetchall()
+
+    entries = []
+    for r in rows:
+        matches = conn.execute(
+            """SELECT team_a, team_b, ft_a, ft_b, ht_a, ht_b, scraped_at
+               FROM matches WHERE season_id = ? AND round_number = ?
+               ORDER BY match_number""",
+            (r["season_id"], r["round_number"]),
+        ).fetchall()
+        if not matches:
+            continue
+        entries.append({
+            "season_id": r["season_id"], "round_number": r["round_number"], "status": "no_prediction",
+            "sort_key": min(m["scraped_at"] for m in matches),
+            "matches": [dict(m) for m in matches],
+        })
+    return entries
+
+
 def get_round_history(conn, max_reconciled=20):
     """Chronological browsing sequence for the dashboard's </> round
-    navigator: up to `max_reconciled` most recently reconciled rounds, plus
-    every currently pending batch (including the live "upcoming" one --
-    always last, the default view), all interleaved in true time order.
+    navigator: up to `max_reconciled` most recently reconciled rounds, every
+    round with results but no prediction ever made (see
+    get_unpredicted_rounds), plus every currently pending batch (including
+    the live "upcoming" one -- always last, the default view), all
+    interleaved in true time order.
 
     Sorted by each entry's own scraped_at (matches.scraped_at for
-    reconciled rounds, fixtures.scraped_at for pending/upcoming batches) --
-    both are set once when first recorded and never touched again, so
-    they're stable, genuinely chronological timestamps. NOT round_number
-    (resets to 1 every season) and NOT reconciled_at/predicted_at (can get
-    re-touched later, e.g. backfilling a second model's predictions for an
-    already-played round, which would jumble the order).
+    reconciled/unpredicted rounds, fixtures.scraped_at for pending/upcoming
+    batches) -- both are set once when first recorded and never touched
+    again, so they're stable, genuinely chronological timestamps. NOT
+    round_number (resets to 1 every season) and NOT reconciled_at/
+    predicted_at (can get re-touched later, e.g. backfilling a second
+    model's predictions for an already-played round, which would jumble
+    the order).
     """
     groups = conn.execute(
         """SELECT DISTINCT m.season_id, m.round_number
@@ -184,6 +227,8 @@ def get_round_history(conn, max_reconciled=20):
         rr = get_reconciled_round(conn, g["season_id"], g["round_number"])
         if rr:
             entries.append(rr)
+
+    entries.extend(get_unpredicted_rounds(conn, max_reconciled))
 
     pending = get_pending_batches(conn)
     for i, batch in enumerate(pending):
