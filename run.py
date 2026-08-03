@@ -15,6 +15,7 @@ from db.upsert import (
 from features.build import build_features
 from predict.backtest import print_backtest, run_backtest
 from predict.baseline import BaselinePredictor
+from predict.blend import BlendPredictor
 from predict.build import build_predictions
 from predict.ml_model import MLPredictor
 from scraper.driver import build_driver
@@ -28,6 +29,7 @@ from dashboard.build import build_dashboard
 PREDICTORS = {
     "baseline": BaselinePredictor,
     "ml_v1": MLPredictor,
+    "blend_v1": BlendPredictor,
 }
 
 

@@ -13,7 +13,7 @@ from track.report import accuracy_stats, verdict
 OUT_PATH = BASE_DIR / "docs" / "index.html"
 
 MARKET_ORDER = ["1X2", "BTTS", "OU2.5", "OU1.5", "CorrectScore", "HT_1X2", "HT_OU1.5", "HT_OU0.5"]
-MODEL_SHORT = {"baseline_v0": "Base", "ml_v1": "ML"}
+MODEL_SHORT = {"baseline_v0": "Base", "ml_v1": "ML", "blend_v1": "Bln"}
 
 
 def _model_tag(model_version):
