@@ -1,25 +1,34 @@
 name: Zoom prediction cycle
 
-# Two triggers per hour, at :17 and :47 -- NOT on the hour. GitHub's own
-# docs warn that "the start of every hour" (:00) is the single most
-# congested slot for scheduled workflows across all of GitHub, and under
-# load some scheduled runs are dropped entirely rather than just delayed --
-# confirmed in practice: two consecutive runs landed 3h17m apart instead of
-# ~1h with the old single "0 * * * *" schedule. Two off-peak triggers do
-# double duty: each individually avoids the worst congestion, and if either
-# one still gets dropped, the other roughly halves the resulting gap
-# instead of losing a full hour.
+# Four triggers per hour (roughly every 15 min), at :02/:17/:32/:47 -- NOT
+# on the hour. GitHub's own docs warn that "the start of every hour" (:00)
+# is the single most congested slot for scheduled workflows across all of
+# GitHub, and under load some scheduled runs are dropped entirely rather
+# than just delayed -- confirmed in practice twice now: first two
+# consecutive runs landed 3h17m apart instead of ~1h with the old single
+# "0 * * * *" schedule (fixed by going to two off-peak triggers); then,
+# even with two triggers, FOUR consecutive slots in a row (~10:17-11:47)
+# got silently dropped with no failed-run record at all -- worse than
+# ordinary congestion, but going from 2 to 4 triggers/hour at least means a
+# dropped streak needs twice as many consecutive misses before it costs a
+# full round's fixture preview (see scraper/fixtures_scraper.py's docstring
+# -- unlike results, a missed fixture-preview window can't be backfilled
+# later, since the fixtures page only ever shows the single current
+# upcoming round with no archive).
 #
 # NOTE: GitHub's scheduled triggers remain best-effort even off-peak and can
 # still slip by minutes to (rarely) tens of minutes under load -- not a hard
-# real-time guarantee. That's fine at this cadence: a season takes ~2.5 days
-# to complete, so occasional schedule drift doesn't put data at real risk.
-# A prolonged outage (hours, not minutes) is the actual danger -- GitHub
-# emails the repo owner automatically when a scheduled run fails, and
-# `workflow_dispatch` below lets you trigger a catch-up run by hand anytime.
+# real-time guarantee. That's fine at this cadence normally, since a season
+# takes ~2.5 days to complete -- but a multi-hour scheduler outage (as
+# opposed to routine minutes-level drift) can still cost a round's worth of
+# predictions outright, which no in-workflow retry logic can fix once the
+# scheduler itself never starts the job. `workflow_dispatch` below lets you
+# trigger a catch-up run by hand anytime you notice a gap.
 on:
   schedule:
+    - cron: "2 * * * *"
     - cron: "17 * * * *"
+    - cron: "32 * * * *"
     - cron: "47 * * * *"
   workflow_dispatch: {}
 
