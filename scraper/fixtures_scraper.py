@@ -55,6 +55,14 @@
   downstream consumer (ODDS_FIELD_MAP, reconcile.py) on one convention.
   Correct Score selections come back "1:0" -- normalized to "1-0" to match
   actual_labels()'s `f"{ft_a}-{ft_b}"` format in track/reconcile.py.
+- Corner Markets is a third tab (4 boxes: O/U Corner at 5 lines, O/U Corner
+  HT at 3 lines, 1X2 Corner, 1st Half 1X2 Corner) -- same direct-URL trick,
+  a third page load per fixture. Corners are a genuinely different
+  statistic from goals, not derivable from anything else on the page.
+  Deliberately NOT wired into any prediction yet (baseline_v0/ml_v1/
+  blend_v1 all still only predict goal-based markets) -- these odds are
+  captured purely to start building history, same position CorrectScore/
+  HTFT odds were in before they had enough of it to test against.
 - The page shows no round number, only kickoff time -- round_number for a
   scraped fixture has to be inferred by the caller (next round after the
   latest played round in the current season), not read off this page.
@@ -90,8 +98,18 @@ EVENT_DETAIL_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/
 # group, garbage slugs and all), so it's a second page load per fixture
 # rather than a click.
 EVENT_DETAIL_1ST_HALF_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/x/{match_ext_id}/VS_HTOU"
+# Corner Markets tab (4 boxes: O/U Corner at 5 lines, O/U Corner HT at 3
+# lines, 1X2 Corner, 1st Half 1X2 Corner) -- same direct-URL trick, third
+# page load per fixture. Exploratory: corners are a genuinely different
+# statistic from goals, not yet used by any prediction (baseline_v0/ml_v1/
+# blend_v1 all still predict goal-based markets only) -- these odds are
+# captured now purely to start accumulating history, so the question "does
+# corner data predict match outcomes" is actually testable once there's
+# enough of it (same situation CorrectScore/HTFT odds were in before they
+# had enough history to check).
+EVENT_DETAIL_CORNERS_URL = "https://sports.bet9ja.com/mobile/eventdetail/zoomsoccer/x/x/x/{match_ext_id}/VS_OUC"
 
-# data-anchor -> our own market key. VS_OU/VS_HTOU are handled separately (multi-line).
+# data-anchor -> our own market key. VS_OU/VS_HTOU/VS_OUC/VS_OUCH are handled separately (multi-line).
 FLAT_MARKETS = {
     "VS_1X2": "1X2",
     "VS_GGNG": "BTTS",
@@ -195,7 +213,7 @@ def _parse_ou_market(box):
     return out
 
 
-ONEX2_MARKETS = {"VS_1X2": "1X2", "VS_1X21T": "HT_1X2"}
+ONEX2_MARKETS = {"VS_1X2": "1X2", "VS_1X21T": "HT_1X2", "VS_1X2C": "CORNER_1X2", "VS_1X2CH": "HT_CORNER_1X2"}
 
 
 def _boxes_by_anchor(driver):
@@ -212,11 +230,13 @@ def _boxes_by_anchor(driver):
 
 
 def _scrape_event_odds(driver, match_ext_id):
-    """Loads one fixture's detail page (two tabs: Popular Markets, then 1st
-    Half Markets) directly by id and returns its odds dict:
+    """Loads one fixture's detail page (three tabs: Popular Markets, 1st
+    Half Markets, Corner Markets) directly by id and returns its odds dict:
     {"1X2": {...}, "BTTS": {...}, "OU1.5": {...}, ..., "OU4.5": {...},
     "CorrectScore": {...}, "HTFT": {...}, "HT_1X2": {...},
-    "HT_OU0.5": {...}, ..., "HT_OU4.5": {...}}.
+    "HT_OU0.5": {...}, ..., "HT_OU4.5": {...}, "CORNER_1X2": {...},
+    "CORNER_OU9.5": {...}, ..., "HT_CORNER_1X2": {...},
+    "HT_CORNER_OU4.5": {...}, ...}.
     """
     driver.get(EVENT_DETAIL_URL.format(match_ext_id=match_ext_id))
     time.sleep(2.5)
@@ -226,7 +246,11 @@ def _scrape_event_odds(driver, match_ext_id):
     time.sleep(2.5)
     first_half_boxes = _boxes_by_anchor(driver)
 
-    boxes_by_anchor = {**popular_boxes, **first_half_boxes}
+    driver.get(EVENT_DETAIL_CORNERS_URL.format(match_ext_id=match_ext_id))
+    time.sleep(2.5)
+    corner_boxes = _boxes_by_anchor(driver)
+
+    boxes_by_anchor = {**popular_boxes, **first_half_boxes, **corner_boxes}
     odds = {}
 
     for anchor, market_key in ONEX2_MARKETS.items():
@@ -260,6 +284,16 @@ def _scrape_event_odds(driver, match_ext_id):
     if htou_box is not None:
         for line, line_odds in _parse_ou_market(htou_box).items():
             odds[f"HT_OU{line}"] = line_odds
+
+    ouc_box = boxes_by_anchor.get("VS_OUC")
+    if ouc_box is not None:
+        for line, line_odds in _parse_ou_market(ouc_box).items():
+            odds[f"CORNER_OU{line}"] = line_odds
+
+    ouch_box = boxes_by_anchor.get("VS_OUCH")
+    if ouch_box is not None:
+        for line, line_odds in _parse_ou_market(ouch_box).items():
+            odds[f"HT_CORNER_OU{line}"] = line_odds
 
     return odds
 
