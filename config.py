@@ -13,8 +13,8 @@ ARCHIVE_DIR = BASE_DIR / "data" / "archive"
 ARCHIVE_TRIGGER_MB = 50
 ARCHIVE_KEEP_DAYS = 2
 
-# The dashboard's charts/stats cover only the most recent N seasons (the
-# CLI report in track/report.py stays all-time).
+# The dashboard's per-round accuracy trend charts cover only the most
+# recent N seasons; everything else on the dashboard stays all-time.
 DASHBOARD_SEASONS = 2
 
 # Results page (Selenium-rendered carousel of played rounds for the two

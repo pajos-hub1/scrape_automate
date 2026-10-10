@@ -226,7 +226,7 @@ def _render_model_accuracy_sections(models_and_stats):
     return "".join(parts)
 
 
-def _render_profit_section(conn, models, season_ids):
+def _render_profit_section(conn, models):
     """Flat-stake ROI per market, one column per live model plus the
     always-back-the-favourite reference. Accuracy alone can't show whether
     picks would actually make money -- this does (see track/report.py's
@@ -234,7 +234,7 @@ def _render_profit_section(conn, models, season_ids):
     if not models:
         return '<p class="empty">No reconciled predictions yet.</p>'
 
-    per_model = {m: profit_stats(conn, m, season_ids=season_ids) for m in models}
+    per_model = {m: profit_stats(conn, m) for m in models}
     # Favourite reference: the same for every model up to which fixtures
     # each one covered -- use the model with the most priced bets.
     ref = max(models, key=lambda m: sum(s["fav_bets"] for s in per_model[m].values()))
@@ -262,12 +262,6 @@ def _render_profit_section(conn, models, season_ids):
 
     return (f'<div class="table-scroll"><table><thead><tr><th>Market</th>{header}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div>')
-
-
-def _scope_note(season_ids):
-    ids = ", ".join(str(s) for s in sorted(season_ids)) or "none yet"
-    return (f"Accuracy and return figures below cover the last {DASHBOARD_SEASONS} seasons only "
-            f"(season {ids}) -- run <code>python run.py track</code> for the all-time report.")
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -382,8 +376,6 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 {meta_section}
 
-<p class="section-note">{scope_note}</p>
-
 <section>
   <h2>Accuracy by market</h2>
   <p class="section-note">Both live models blended -- see "Accuracy by market" below for the
@@ -416,8 +408,8 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 <section>
   <h2>Accuracy trend across rounds, per market</h2>
-  <p class="section-note">Both live models blended, one line per market -- see above for why
-  markets aren't combined into a single line.</p>
+  <p class="section-note">Last {dashboard_seasons} seasons only ({trend_seasons}), both live models
+  blended, one line per market -- see above for why markets aren't combined into a single line.</p>
   {market_trend_html}
 </section>
 
@@ -485,11 +477,12 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
-    # Charts/stats cover only the last DASHBOARD_SEASONS seasons, not all
-    # history -- the CLI report (`run.py track`) is still all-time.
+    stats = accuracy_stats(conn)  # blended across models -- used for the per-market tiles
+    models_and_stats = get_models_and_stats(conn)
+    # Only the per-round trend lines are limited to the last DASHBOARD_SEASONS
+    # seasons -- all-time, they're 700+ points squeezed into one chart.
+    # Tiles, per-model charts and the ROI table stay all-time.
     season_ids = get_recent_season_ids(conn, DASHBOARD_SEASONS)
-    stats = accuracy_stats(conn, season_ids=season_ids)  # blended across models -- per-market tiles
-    models_and_stats = get_models_and_stats(conn, season_ids=season_ids)
     history = get_round_history(conn)
 
     html_out = PAGE_TEMPLATE.format(
@@ -499,8 +492,9 @@ def build_dashboard(conn, out_path=OUT_PATH):
         round_browser_html=_render_round_browser(history),
         model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
         market_trend_html=_render_market_trend_sections(conn, season_ids),
-        scope_note=_scope_note(season_ids),
-        profit_html=_render_profit_section(conn, sorted(models_and_stats), season_ids),
+        dashboard_seasons=DASHBOARD_SEASONS,
+        trend_seasons=", ".join(f"S{s}" for s in sorted(season_ids)) or "none yet",
+        profit_html=_render_profit_section(conn, sorted(models_and_stats)),
     )
 
     out_path = Path(out_path)
