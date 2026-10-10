@@ -9,19 +9,33 @@ into one misleading "model" number.
 from collections import defaultdict
 
 
-def accuracy_stats(conn, model_version=None):
+def _season_scope(season_ids):
+    """(join, where-clause, params) restricting prediction_results `pr` to
+    matches from the given seasons. season_ids=None means all-time."""
+    if season_ids is None:
+        return "", None, []
+    placeholders = ",".join("?" for _ in season_ids) or "NULL"
+    return (" JOIN matches sm ON sm.match_id = pr.match_ref",
+            f"sm.season_id IN ({placeholders})", list(season_ids))
+
+
+def accuracy_stats(conn, model_version=None, season_ids=None):
     """model_version=None blends every model's predictions together (the
     original single-model behavior, kept as the default so existing
     callers -- the dashboard's overall tile -- don't need to change).
-    Pass a specific model_version to isolate just that model's track record.
+    Pass a specific model_version to isolate just that model's track record,
+    and/or season_ids to restrict to matches from those seasons.
     """
+    join, season_where, params = _season_scope(season_ids)
     query = """SELECT pr.market, pr.correct, pr.baseline_correct, pr.odds_implied_correct
                FROM all_prediction_results pr
-               JOIN all_predictions p ON p.prediction_id = pr.prediction_id"""
-    params = ()
+               JOIN all_predictions p ON p.prediction_id = pr.prediction_id""" + join
+    where = [season_where] if season_where else []
     if model_version is not None:
-        query += " WHERE p.model_version = ?"
-        params = (model_version,)
+        where.append("p.model_version = ?")
+        params.append(model_version)
+    if where:
+        query += " WHERE " + " AND ".join(where)
     rows = conn.execute(query, params).fetchall()
 
     stats = defaultdict(lambda: {"n": 0, "model_correct": 0,
@@ -59,7 +73,7 @@ def _ensure_closing_prices(conn):
     conn.execute("CREATE INDEX temp.idx_closing_prices ON closing_prices(fixture_id, market, selection)")
 
 
-def profit_stats(conn, model_version):
+def profit_stats(conn, model_version, season_ids=None):
     """Flat 1-unit stake on every reconciled prediction, at the closing
     price of the predicted selection -- the number accuracy can't show.
     Accuracy says how often a pick wins; profit says whether the price
@@ -73,6 +87,7 @@ def profit_stats(conn, model_version):
     (e.g. old CorrectScore "Other" picks) are skipped, not counted as losses.
     """
     _ensure_closing_prices(conn)
+    join, season_where, params = _season_scope(season_ids)
     rows = conn.execute(
         """SELECT pr.market, pr.correct, pr.odds_implied_correct,
                   mp.price AS model_price, fp.price AS fav_price
@@ -83,9 +98,9 @@ def profit_stats(conn, model_version):
             AND mp.selection = pr.predicted_label
            LEFT JOIN temp.closing_prices fp
              ON fp.fixture_id = p.fixture_ref AND fp.market = pr.market
-            AND fp.selection = pr.odds_implied_label
-           WHERE p.model_version = ?""",
-        (model_version,),
+            AND fp.selection = pr.odds_implied_label"""
+        + join + " WHERE p.model_version = ?" + (f" AND {season_where}" if season_where else ""),
+        [model_version] + params,
     ).fetchall()
 
     stats = defaultdict(lambda: {"bets": 0, "returns": 0.0, "fav_bets": 0, "fav_returns": 0.0})

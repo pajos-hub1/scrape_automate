@@ -13,6 +13,10 @@ ARCHIVE_DIR = BASE_DIR / "data" / "archive"
 ARCHIVE_TRIGGER_MB = 50
 ARCHIVE_KEEP_DAYS = 2
 
+# The dashboard's charts/stats cover only the most recent N seasons (the
+# CLI report in track/report.py stays all-time).
+DASHBOARD_SEASONS = 2
+
 # Results page (Selenium-rendered carousel of played rounds for the two
 # seasons bet9ja currently exposes: "current" and "previous").
 # NOTE: matchId in this URL is tied to a specific live match/session on

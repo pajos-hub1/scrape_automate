@@ -5,9 +5,10 @@ GitHub Pages copy always reflects the latest scrape/predict/track pass.
 import html
 from pathlib import Path
 
-from config import BASE_DIR, ROUNDS_PER_SEASON
+from config import BASE_DIR, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
 from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
-from dashboard.data import get_accuracy_trend, get_meta, get_models_and_stats, get_round_history
+from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_recent_season_ids,
+                            get_round_history)
 from track.report import accuracy_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -194,14 +195,14 @@ def _render_verdict_summary(stats):
     return f'<ul class="verdicts">{"".join(lines)}</ul>' if lines else ""
 
 
-def _render_market_trend_sections(conn):
+def _render_market_trend_sections(conn, season_ids):
     """One trend line per market instead of a single all-markets-blended
     line -- same reasoning as _render_market_tiles: CorrectScore sitting at
     ~13% would flatten every other market's real movement into noise on a
     shared 0-100% line blended together with them."""
     parts = []
     for market in MARKET_ORDER:
-        trend = get_accuracy_trend(conn, market=market)
+        trend = get_accuracy_trend(conn, market=market, season_ids=season_ids)
         parts.append(f'<h3>{html.escape(MARKET_LABELS[market])}</h3>')
         parts.append(accuracy_trend_chart(trend))
     return "".join(parts)
@@ -225,7 +226,7 @@ def _render_model_accuracy_sections(models_and_stats):
     return "".join(parts)
 
 
-def _render_profit_section(conn, models):
+def _render_profit_section(conn, models, season_ids):
     """Flat-stake ROI per market, one column per live model plus the
     always-back-the-favourite reference. Accuracy alone can't show whether
     picks would actually make money -- this does (see track/report.py's
@@ -233,7 +234,7 @@ def _render_profit_section(conn, models):
     if not models:
         return '<p class="empty">No reconciled predictions yet.</p>'
 
-    per_model = {m: profit_stats(conn, m) for m in models}
+    per_model = {m: profit_stats(conn, m, season_ids=season_ids) for m in models}
     # Favourite reference: the same for every model up to which fixtures
     # each one covered -- use the model with the most priced bets.
     ref = max(models, key=lambda m: sum(s["fav_bets"] for s in per_model[m].values()))
@@ -261,6 +262,12 @@ def _render_profit_section(conn, models):
 
     return (f'<div class="table-scroll"><table><thead><tr><th>Market</th>{header}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
+def _scope_note(season_ids):
+    ids = ", ".join(str(s) for s in sorted(season_ids)) or "none yet"
+    return (f"Accuracy and return figures below cover the last {DASHBOARD_SEASONS} seasons only "
+            f"(season {ids}) -- run <code>python run.py track</code> for the all-time report.")
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -375,6 +382,8 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 {meta_section}
 
+<p class="section-note">{scope_note}</p>
+
 <section>
   <h2>Accuracy by market</h2>
   <p class="section-note">Both live models blended -- see "Accuracy by market" below for the
@@ -476,8 +485,11 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
-    stats = accuracy_stats(conn)  # blended across models -- used for the per-market tiles
-    models_and_stats = get_models_and_stats(conn)
+    # Charts/stats cover only the last DASHBOARD_SEASONS seasons, not all
+    # history -- the CLI report (`run.py track`) is still all-time.
+    season_ids = get_recent_season_ids(conn, DASHBOARD_SEASONS)
+    stats = accuracy_stats(conn, season_ids=season_ids)  # blended across models -- per-market tiles
+    models_and_stats = get_models_and_stats(conn, season_ids=season_ids)
     history = get_round_history(conn)
 
     html_out = PAGE_TEMPLATE.format(
@@ -486,8 +498,9 @@ def build_dashboard(conn, out_path=OUT_PATH):
         market_tiles=_render_market_tiles(stats),
         round_browser_html=_render_round_browser(history),
         model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
-        market_trend_html=_render_market_trend_sections(conn),
-        profit_html=_render_profit_section(conn, sorted(models_and_stats)),
+        market_trend_html=_render_market_trend_sections(conn, season_ids),
+        scope_note=_scope_note(season_ids),
+        profit_html=_render_profit_section(conn, sorted(models_and_stats), season_ids),
     )
 
     out_path = Path(out_path)

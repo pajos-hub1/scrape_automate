@@ -242,7 +242,15 @@ def get_round_history(conn, max_reconciled=20):
     return entries
 
 
-def get_accuracy_trend(conn, model_version=None, market=None):
+def get_recent_season_ids(conn, n):
+    """The n most recently seen seasons -- what the dashboard's charts and
+    stats are scoped to (config.DASHBOARD_SEASONS)."""
+    return [r["season_id"] for r in conn.execute(
+        "SELECT season_id FROM seasons ORDER BY first_seen DESC LIMIT ?", (n,)
+    )]
+
+
+def get_accuracy_trend(conn, model_version=None, market=None, season_ids=None):
     """Accuracy per actual round, chronological, optionally scoped to one
     model and/or one market. model_version=None blends every live model
     together; market=None blends every market together -- blending markets
@@ -270,6 +278,9 @@ def get_accuracy_trend(conn, model_version=None, market=None):
     if market is not None:
         where.append("pr.market = ?")
         params.append(market)
+    if season_ids is not None:
+        where.append(f"m.season_id IN ({','.join('?' for _ in season_ids) or 'NULL'})")
+        params.extend(season_ids)
     if where:
         query += " WHERE " + " AND ".join(where)
     query += " GROUP BY m.season_id, m.round_number ORDER BY m.season_id, m.round_number"
@@ -281,8 +292,8 @@ def get_accuracy_trend(conn, model_version=None, market=None):
     ]
 
 
-def get_models_and_stats(conn):
+def get_models_and_stats(conn, season_ids=None):
     """{model_version: accuracy_stats(...)} for every model with live
     predictions -- the per-model comparison the dashboard's accuracy
     section renders one chart per model from."""
-    return {m: accuracy_stats(conn, model_version=m) for m in list_model_versions(conn)}
+    return {m: accuracy_stats(conn, model_version=m, season_ids=season_ids) for m in list_model_versions(conn)}
