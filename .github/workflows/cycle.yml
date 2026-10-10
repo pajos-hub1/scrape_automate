@@ -41,7 +41,11 @@ concurrency:
 
 jobs:
   cycle:
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest, which moves to Ubuntu 26 from
+    # 2026-10-19 -- a new image can ship a different Chrome/driver setup and
+    # break the Selenium scraper without warning. Bump deliberately, and
+    # watch the first run after doing so.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
