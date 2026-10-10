@@ -1,0 +1,50 @@
+name: Data freshness check
+
+# Independent watchdog for the Zoom prediction cycle. A healthy cycle
+# commits data/zoom.db.gz several times an hour, so going hours without a
+# new commit means something is wrong -- pushes failing, the cycle erroring
+# every run, or GitHub's scheduler silently not starting it at all. In
+# Sept-Oct 2026 every push was rejected for ~4 weeks (zoom.db outgrew
+# GitHub's 100 MiB file limit) and nothing distinguished that from routine
+# noise; this job fails with a specific message instead, which GitHub
+# emails as "Data freshness check: All jobs have failed".
+#
+# Lives in its own workflow (not a step in cycle.yml) so it still fires if
+# the cycle itself stops being scheduled. Reads commit history through the
+# API, so there's no need to check out the repo's large history.
+on:
+  schedule:
+    - cron: "40 */3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      MAX_AGE_HOURS: 6
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Fail if data/zoom.db.gz hasn't been updated recently
+        run: |
+          last=$(curl -fsSL \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/commits?path=data/zoom.db.gz&per_page=1" \
+            | jq -r '.[0].commit.committer.date')
+
+          if [ -z "$last" ] || [ "$last" = "null" ]; then
+            echo "::error::No commit touching data/zoom.db.gz found at all."
+            exit 1
+          fi
+
+          age_hours=$(( ($(date -u +%s) - $(date -u -d "$last" +%s)) / 3600 ))
+          echo "Last data commit: $last (${age_hours}h ago, limit ${MAX_AGE_HOURS}h)"
+
+          if [ "$age_hours" -ge "$MAX_AGE_HOURS" ]; then
+            echo "::error::No new data committed for ${age_hours}h (last: $last). Check the latest 'Zoom prediction cycle' run's log -- pushes may be failing or the schedule may have stopped."
+            exit 1
+          fi
