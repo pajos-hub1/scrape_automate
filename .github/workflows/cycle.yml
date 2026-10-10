@@ -24,6 +24,20 @@ name: Zoom prediction cycle
 # predictions outright, which no in-workflow retry logic can fix once the
 # scheduler itself never starts the job. `workflow_dispatch` below lets you
 # trigger a catch-up run by hand anytime you notice a gap.
+#
+# SELF-CHAINING (added 2026-10-10): measured over Sep 7 - Oct 10, GitHub
+# only started ~16-26 of the 96 scheduled runs per day, with near-daily
+# 5-7 hour gaps of no runs at all. So the cycle no longer relies on the
+# schedule: each run's last step dispatches the NEXT run itself (see
+# "Trigger next cycle" below), no sooner than MIN_INTERVAL_MIN after this
+# run started. workflow_dispatch is the documented exception to "events
+# from GITHUB_TOKEN don't trigger new runs", so this needs no personal
+# token. The schedule above stays as a backstop that restarts the chain
+# if it ever breaks; the concurrency group keeps it to one run at a time,
+# so the chain can't multiply.
+#
+# To stop the chain: set repo variable CYCLE_CHAIN=off (Settings ->
+# Secrets and variables -> Actions -> Variables), or disable the workflow.
 on:
   schedule:
     - cron: "2 * * * *"
@@ -34,6 +48,7 @@ on:
 
 permissions:
   contents: write
+  actions: write   # lets the last step dispatch the next run
 
 concurrency:
   group: zoom-cycle
@@ -46,8 +61,13 @@ jobs:
     # break the Selenium scraper without warning. Bump deliberately, and
     # watch the first run after doing so.
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
+    env:
+      MIN_INTERVAL_MIN: 15
     steps:
+      - name: Record start time
+        run: echo "CYCLE_STARTED_AT=$(date -u +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -135,4 +155,33 @@ jobs:
             fi
           done
           echo "::error::All 3 push attempts failed -- this run's data was NOT saved."
+          exit 1
+
+      - name: Trigger next cycle
+        # always(): a failed cycle must not break the chain -- the next
+        # run may well succeed (site hiccup, push race, etc.).
+        if: always() && vars.CYCLE_CHAIN != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Pace the chain: wait until MIN_INTERVAL_MIN after this run started.
+          wait=$(( CYCLE_STARTED_AT + MIN_INTERVAL_MIN * 60 - $(date -u +%s) ))
+          if [ "$wait" -gt 0 ]; then
+            echo "Waiting ${wait}s before triggering the next cycle..."
+            sleep "$wait"
+          fi
+          for attempt in 1 2 3; do
+            code=$(curl -s -o /tmp/dispatch.out -w '%{http_code}' -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/cycle.yml/dispatches" \
+              -d '{"ref":"main"}')
+            if [ "$code" = "204" ]; then
+              echo "Next cycle dispatched."
+              exit 0
+            fi
+            echo "Dispatch attempt $attempt got HTTP $code: $(cat /tmp/dispatch.out)"
+            sleep 10
+          done
+          echo "::error::Could not dispatch the next cycle -- chain broken until the next scheduled run restarts it."
           exit 1

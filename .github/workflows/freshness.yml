@@ -14,7 +14,7 @@ name: Data freshness check
 # API, so there's no need to check out the repo's large history.
 on:
   schedule:
-    - cron: "40 */3 * * *"
+    - cron: "40 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -25,7 +25,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
-      MAX_AGE_HOURS: 6
+      # The self-chaining cycle (see cycle.yml) commits every ~15-20 min, so
+      # 2h without data means the chain has broken AND the schedule backstop
+      # hasn't restarted it. (Before the chain, GitHub's schedule alone had
+      # routine 5-7h gaps, which would have made this alert useless.)
+      MAX_AGE_HOURS: 2
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Fail if data/zoom.db.gz hasn't been updated recently
