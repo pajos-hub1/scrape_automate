@@ -76,7 +76,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/zoom.db docs/index.html
+          # Only the gzipped DB + archives are tracked -- GitHub rejects any
+          # file over 100 MiB, which the raw zoom.db hit in Sept 2026 and
+          # silently failed every push for weeks. run.py cycle packs them.
+          git add data/zoom.db.gz data/archive docs/index.html
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0
@@ -87,12 +90,12 @@ jobs:
           # e.g. someone pushing a manual code fix while this run's scrape/
           # predict/track steps were still in flight. A bare `git push` would
           # just fail and drop this run's update. Retry a couple times with
-          # a rebase first: data/zoom.db and docs/index.html are both fully
+          # a rebase first: data/zoom.db.gz and docs/index.html are both fully
           # regenerated artifacts (not hand-authored diffs), so replaying
           # this commit on top of whatever landed is always safe UNLESS the
           # remote commit touched the *same* generated files (a real content
           # collision, e.g. another cycle run or a manual DB backfill) -- in
-          # that case rebase can't auto-merge a binary sqlite file and we
+          # that case rebase can't auto-merge a binary gzip file and we
           # give up gracefully. That's fine: this pipeline reflects current
           # state, not history, so the next scheduled run 30ish minutes
           # later just picks up from whatever's on the remote and continues.
@@ -104,7 +107,7 @@ jobs:
             if [ "$attempt" -lt 3 ]; then
               git fetch origin main
               if ! git rebase origin/main; then
-                echo "Rebase hit a real conflict (likely both sides touched data/zoom.db) -- giving up, next scheduled run will continue from the remote's current state."
+                echo "Rebase hit a real conflict (likely both sides touched data/zoom.db.gz) -- giving up, next scheduled run will continue from the remote's current state."
                 git rebase --abort
                 exit 1
               fi

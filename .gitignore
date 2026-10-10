@@ -8,3 +8,9 @@ data/*.db-journal
 debug/
 .claude
 
+
+# git tracks only the gzipped copies (GitHub rejects files > 100 MiB) --
+# the plain .db files are working copies unpacked by db/storage.py.
+data/*.db
+data/archive/*.db
+*.tmp

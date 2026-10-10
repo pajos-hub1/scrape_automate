@@ -16,8 +16,8 @@ def accuracy_stats(conn, model_version=None):
     Pass a specific model_version to isolate just that model's track record.
     """
     query = """SELECT pr.market, pr.correct, pr.baseline_correct, pr.odds_implied_correct
-               FROM prediction_results pr
-               JOIN predictions p ON p.prediction_id = pr.prediction_id"""
+               FROM all_prediction_results pr
+               JOIN all_predictions p ON p.prediction_id = pr.prediction_id"""
     params = ()
     if model_version is not None:
         query += " WHERE p.model_version = ?"
@@ -42,7 +42,7 @@ def accuracy_stats(conn, model_version=None):
 
 def list_model_versions(conn):
     return [r["model_version"] for r in conn.execute(
-        "SELECT DISTINCT model_version FROM predictions ORDER BY model_version"
+        "SELECT DISTINCT model_version FROM all_predictions ORDER BY model_version"
     )]
 
 

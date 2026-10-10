@@ -129,8 +129,8 @@ def get_reconciled_round(conn, season_id, round_number):
     rows = conn.execute(
         """SELECT f.team_a, f.team_b, m.ft_a, m.ft_b, m.ht_a, m.ht_b, m.scraped_at,
                   p.model_version, pr.market, pr.predicted_label, pr.actual_label, pr.correct
-           FROM prediction_results pr
-           JOIN predictions p ON p.prediction_id = pr.prediction_id
+           FROM all_prediction_results pr
+           JOIN all_predictions p ON p.prediction_id = pr.prediction_id
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            JOIN matches m ON m.match_id = pr.match_ref
            WHERE m.season_id = ? AND m.round_number = ?
@@ -173,7 +173,7 @@ def get_unpredicted_rounds(conn, max_results=20):
         """SELECT DISTINCT m.season_id, m.round_number
            FROM matches m
            WHERE m.ft_a IS NOT NULL
-             AND NOT EXISTS (SELECT 1 FROM prediction_results pr WHERE pr.match_ref = m.match_id)
+             AND NOT EXISTS (SELECT 1 FROM all_prediction_results pr WHERE pr.match_ref = m.match_id)
            ORDER BY m.season_id DESC, m.round_number DESC
            LIMIT ?""",
         (max_results,),
@@ -216,7 +216,7 @@ def get_round_history(conn, max_reconciled=20):
     """
     groups = conn.execute(
         """SELECT DISTINCT m.season_id, m.round_number
-           FROM prediction_results pr JOIN matches m ON m.match_id = pr.match_ref
+           FROM all_prediction_results pr JOIN matches m ON m.match_id = pr.match_ref
            ORDER BY m.season_id DESC, m.round_number DESC
            LIMIT ?""",
         (max_reconciled,),
@@ -260,11 +260,11 @@ def get_accuracy_trend(conn, model_version=None, market=None):
     for the tooltip.
     """
     query = """SELECT m.season_id, m.round_number, COUNT(*) AS n, SUM(pr.correct) AS correct
-               FROM prediction_results pr
+               FROM all_prediction_results pr
                JOIN matches m ON m.match_id = pr.match_ref"""
     where, params = [], []
     if model_version is not None:
-        query += " JOIN predictions p ON p.prediction_id = pr.prediction_id"
+        query += " JOIN all_predictions p ON p.prediction_id = pr.prediction_id"
         where.append("p.model_version = ?")
         params.append(model_version)
     if market is not None:

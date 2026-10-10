@@ -2,8 +2,10 @@
 import argparse
 import sys
 
-from config import ROUNDS_PER_SEASON
+from config import DB_PATH, ROUNDS_PER_SEASON
+from db.archive import archive_if_needed
 from db.connection import get_connection
+from db.storage import pack
 from db.upsert import (
     archive_missing_seasons,
     get_or_create_season,
@@ -219,9 +221,24 @@ def cmd_dashboard(args):
     print(f"=== Dashboard written to {path} ===")
 
 
+def cmd_archive(args):
+    with get_connection() as conn:
+        summary = archive_if_needed(conn, force=getattr(args, "force", False))
+    print("=== Archive summary ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
+def cmd_pack(args):
+    """Gzip the live DB for committing -- git only tracks data/zoom.db.gz
+    (GitHub rejects files over 100 MiB; see config.py)."""
+    gz = pack(DB_PATH)
+    print(f"=== Packed {DB_PATH.name} -> {gz.name} ({gz.stat().st_size / 1048576:.1f} MB) ===")
+
+
 def cmd_cycle(args):
-    """The full loop: scrape -> features -> predict -> track -> dashboard.
-    What the scheduled GitHub Actions run calls every ~90 minutes."""
+    """The full loop: scrape -> features -> predict -> track -> archive ->
+    dashboard -> pack. What the scheduled GitHub Actions run calls."""
     cmd_scrape(args)
     print()
     cmd_features(args)
@@ -230,7 +247,11 @@ def cmd_cycle(args):
     print()
     cmd_track(args)
     print()
+    cmd_archive(args)
+    print()
     cmd_dashboard(args)
+    print()
+    cmd_pack(args)
 
 
 def main():
@@ -257,7 +278,14 @@ def main():
     dashboard_p = sub.add_parser("dashboard", help="Regenerate the static dashboard HTML")
     dashboard_p.set_defaults(func=cmd_dashboard)
 
-    cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> dashboard")
+    archive_p = sub.add_parser("archive", help="Move old reconciled rows into a frozen archive file if the DB is large")
+    archive_p.add_argument("--force", action="store_true", help="Archive even if under the size trigger")
+    archive_p.set_defaults(func=cmd_archive)
+
+    pack_p = sub.add_parser("pack", help="Gzip data/zoom.db -> data/zoom.db.gz for committing")
+    pack_p.set_defaults(func=cmd_pack)
+
+    cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> archive -> dashboard -> pack")
     cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
     cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=list(PREDICTORS))
     cycle_p.set_defaults(func=cmd_cycle)
