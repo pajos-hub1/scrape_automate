@@ -13,5 +13,10 @@ def normalize(probs: dict) -> dict:
 
 
 def market_result(probs: dict) -> dict:
-    label = max(probs, key=probs.get)
+    # "Other" (predict/poisson.top_scorelines' catch-all for every
+    # scoreline outside the top N) usually holds the most mass combined,
+    # but it can never match a real result -- reconcile records exact
+    # scores like "1-1". Picking it scored CorrectScore at ~0% for months.
+    candidates = [k for k in probs if k != "Other"] or list(probs)
+    label = max(candidates, key=probs.get)
     return {"label": label, "probabilities": probs, "confidence": probs[label]}

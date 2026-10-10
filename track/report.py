@@ -40,6 +40,70 @@ def accuracy_stats(conn, model_version=None):
     return stats
 
 
+def _ensure_closing_prices(conn):
+    """TEMP table of each (fixture, market, selection)'s last captured
+    price -- the closing price a bet placed at prediction time would have
+    got. Built once per connection from all_odds (live + archives)."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = 'closing_prices'"
+    ).fetchone()
+    if exists:
+        return
+    # SQLite's bare-column rule: with MAX() in the select list, `price`
+    # comes from the same row as the latest captured_at.
+    conn.execute(
+        """CREATE TEMP TABLE closing_prices AS
+           SELECT fixture_id, market, selection, price, MAX(captured_at) AS captured_at
+           FROM all_odds GROUP BY fixture_id, market, selection"""
+    )
+    conn.execute("CREATE INDEX temp.idx_closing_prices ON closing_prices(fixture_id, market, selection)")
+
+
+def profit_stats(conn, model_version):
+    """Flat 1-unit stake on every reconciled prediction, at the closing
+    price of the predicted selection -- the number accuracy can't show.
+    Accuracy says how often a pick wins; profit says whether the price
+    paid for those wins covers the losses. In a market whose odds are
+    well calibrated (Zoom's are: across ~7,400 fixtures, 1X2 outcomes the
+    odds priced at 25% happened 25.0% of the time, 55% -> 54.4%, etc.),
+    every strategy trends toward minus the bookmaker margin (~5.7% on 1X2).
+
+    Also computes the same flat-stake result for always backing the odds
+    favourite, as the reference point. Predictions with no matching price
+    (e.g. old CorrectScore "Other" picks) are skipped, not counted as losses.
+    """
+    _ensure_closing_prices(conn)
+    rows = conn.execute(
+        """SELECT pr.market, pr.correct, pr.odds_implied_correct,
+                  mp.price AS model_price, fp.price AS fav_price
+           FROM all_prediction_results pr
+           JOIN all_predictions p ON p.prediction_id = pr.prediction_id
+           LEFT JOIN temp.closing_prices mp
+             ON mp.fixture_id = p.fixture_ref AND mp.market = pr.market
+            AND mp.selection = pr.predicted_label
+           LEFT JOIN temp.closing_prices fp
+             ON fp.fixture_id = p.fixture_ref AND fp.market = pr.market
+            AND fp.selection = pr.odds_implied_label
+           WHERE p.model_version = ?""",
+        (model_version,),
+    ).fetchall()
+
+    stats = defaultdict(lambda: {"bets": 0, "returns": 0.0, "fav_bets": 0, "fav_returns": 0.0})
+    for r in rows:
+        s = stats[r["market"]]
+        if r["model_price"] is not None:
+            s["bets"] += 1
+            s["returns"] += r["model_price"] if r["correct"] else 0.0
+        if r["fav_price"] is not None and r["odds_implied_correct"] is not None:
+            s["fav_bets"] += 1
+            s["fav_returns"] += r["fav_price"] if r["odds_implied_correct"] else 0.0
+    return stats
+
+
+def roi(returns, bets):
+    return (returns - bets) / bets if bets else None
+
+
 def list_model_versions(conn):
     return [r["model_version"] for r in conn.execute(
         "SELECT DISTINCT model_version FROM all_predictions ORDER BY model_version"
@@ -104,6 +168,27 @@ def _print_head_to_head(conn, models):
         print(f"{market:14s} " + " ".join(cells))
 
 
+def _print_profit_table(stats):
+    header = f"{'Market':14s} {'Bets':>6s} {'Profit':>9s} {'ROI':>7s}   {'Fav ROI':>7s}"
+    print(header)
+    print("-" * len(header))
+    tot = {"bets": 0, "returns": 0.0, "fav_bets": 0, "fav_returns": 0.0}
+
+    def _row(label, s):
+        r = roi(s["returns"], s["bets"])
+        fr = roi(s["fav_returns"], s["fav_bets"])
+        r_str = f"{r * 100:6.1f}%" if r is not None else "    n/a"
+        fr_str = f"{fr * 100:6.1f}%" if fr is not None else "    n/a"
+        print(f"{label:14s} {s['bets']:6d} {s['returns'] - s['bets']:+9.1f} {r_str}   {fr_str}")
+
+    for market in sorted(stats):
+        _row(market, stats[market])
+        for k in tot:
+            tot[k] += stats[market][k]
+    print("-" * len(header))
+    _row("Overall", tot)
+
+
 def print_report(conn):
     models = list_model_versions(conn)
     if not models:
@@ -120,5 +205,11 @@ def print_report(conn):
         print()
 
     _print_head_to_head(conn, models)
+
+    print("\n=== Flat-stake profit (1 unit per prediction, at closing odds) ===")
+    print("(Fav ROI = always backing the odds favourite instead, same fixtures.)")
+    for m in models:
+        print(f"\n--- {m} ---")
+        _print_profit_table(profit_stats(conn, m))
     print("\n(Overall/per-market blends CorrectScore's exact-match difficulty with three-way")
     print(" 1X2 etc -- read individual market rows for real signal, not just Overall.)")

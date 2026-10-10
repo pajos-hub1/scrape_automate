@@ -8,7 +8,7 @@ from pathlib import Path
 from config import BASE_DIR, ROUNDS_PER_SEASON
 from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
 from dashboard.data import get_accuracy_trend, get_meta, get_models_and_stats, get_round_history
-from track.report import accuracy_stats, verdict
+from track.report import accuracy_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
 
@@ -225,6 +225,44 @@ def _render_model_accuracy_sections(models_and_stats):
     return "".join(parts)
 
 
+def _render_profit_section(conn, models):
+    """Flat-stake ROI per market, one column per live model plus the
+    always-back-the-favourite reference. Accuracy alone can't show whether
+    picks would actually make money -- this does (see track/report.py's
+    profit_stats docstring)."""
+    if not models:
+        return '<p class="empty">No reconciled predictions yet.</p>'
+
+    per_model = {m: profit_stats(conn, m) for m in models}
+    # Favourite reference: the same for every model up to which fixtures
+    # each one covered -- use the model with the most priced bets.
+    ref = max(models, key=lambda m: sum(s["fav_bets"] for s in per_model[m].values()))
+
+    def _cell(returns, bets):
+        r = roi(returns, bets)
+        if r is None:
+            return '<td>n/a</td>'
+        cls = "hit" if r > 0 else "miss"
+        return f'<td class="{cls}">{r * 100:+.1f}%</td>'
+
+    header = "".join(f"<th>{html.escape(_model_tag(m))}</th>" for m in models) + "<th>Odds fav</th>"
+    rows = []
+    for market in MARKET_ORDER:
+        if not any(market in per_model[m] for m in models):
+            continue
+        cells = "".join(
+            _cell(per_model[m][market]["returns"], per_model[m][market]["bets"])
+            if market in per_model[m] else "<td>n/a</td>"
+            for m in models
+        )
+        fav = per_model[ref].get(market)
+        cells += _cell(fav["fav_returns"], fav["fav_bets"]) if fav else "<td>n/a</td>"
+        rows.append(f"<tr><td>{html.escape(MARKET_LABELS[market])}</td>{cells}</tr>")
+
+    return (f'<div class="table-scroll"><table><thead><tr><th>Market</th>{header}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
 PAGE_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
@@ -357,6 +395,17 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
+  <h2>Return on a flat 1-unit stake, per market</h2>
+  <p class="section-note">What accuracy can't show: whether backing every pick at its closing
+  odds would have made money. Bet9ja's Zoom odds are very well calibrated (outcomes priced at 25%
+  happen ~25% of the time), so every strategy trends toward minus the bookmaker's margin (~3-8%
+  depending on market). A model with a real edge would show up here as a positive ROI that holds
+  over thousands of bets. "Odds fav" = always backing the bookmaker's favourite. Correct Score's
+  history includes months of "Other" picks from a since-fixed bug, which almost never won.</p>
+  {profit_html}
+</section>
+
+<section>
   <h2>Accuracy trend across rounds, per market</h2>
   <p class="section-note">Both live models blended, one line per market -- see above for why
   markets aren't combined into a single line.</p>
@@ -438,6 +487,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         round_browser_html=_render_round_browser(history),
         model_accuracy_html=_render_model_accuracy_sections(models_and_stats),
         market_trend_html=_render_market_trend_sections(conn),
+        profit_html=_render_profit_section(conn, sorted(models_and_stats)),
     )
 
     out_path = Path(out_path)
