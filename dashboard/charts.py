@@ -136,3 +136,53 @@ def accuracy_trend_chart(trend, width=680, height=220):
                 f'x2="{width - margin_right}" y2="{margin_top + plot_h:.1f}" class="axis-line" />')
     svg.append('</svg>')
     return "".join(svg)
+
+
+def cumulative_profit_chart(trend, width=680, height=240):
+    """Running flat-stake profit (units) across rounds, with a zero line --
+    above zero would mean the picks are winning money overall. Each point's
+    tooltip carries that single round's own profit."""
+    if len(trend) < 2:
+        return (f'<p class="empty">Only {len(trend)} round(s) with priced, reconciled picks so far.</p>')
+
+    margin_left, margin_right, margin_top, margin_bottom = 52, 16, 16, 32
+    plot_w = width - margin_left - margin_right
+    plot_h = height - margin_top - margin_bottom
+
+    vals = [p["cumulative"] for p in trend]
+    lo, hi = min(min(vals), 0.0), max(max(vals), 0.0)
+    span = (hi - lo) or 1.0
+    lo, hi = lo - span * 0.08, hi + span * 0.08
+    n = len(trend)
+
+    def x_of(i):
+        return margin_left + plot_w * i / max(n - 1, 1)
+
+    def y_of(v):
+        return margin_top + plot_h * (hi - v) / (hi - lo)
+
+    svg = [f'<svg class="chart" viewBox="0 0 {width} {height}" role="img" '
+           f'aria-label="Running flat-stake profit across rounds">']
+
+    for k in range(5):
+        v = lo + (hi - lo) * k / 4
+        y = y_of(v)
+        svg.append(f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width - margin_right}" y2="{y:.1f}" class="gridline" />')
+        svg.append(f'<text x="{margin_left - 8}" y="{y:.1f}" class="axis-label" text-anchor="end" '
+                   f'dominant-baseline="middle">{v:+.0f}</text>')
+    y0 = y_of(0)
+    svg.append(f'<line x1="{margin_left}" y1="{y0:.1f}" x2="{width - margin_right}" y2="{y0:.1f}" class="axis-line" />')
+
+    points = [(x_of(p["index"]), y_of(p["cumulative"])) for p in trend]
+    path = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f},{y:.1f}" for i, (x, y) in enumerate(points))
+    svg.append(f'<path d="{path}" fill="none" stroke="var(--series-1)" stroke-width="2" />')
+    for p, (x, y) in zip(trend, points):
+        svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="var(--series-1)">'
+                   f'<title>{html.escape(p["label"])}: this round {p["profit"]:+.2f} units on {p["bets"]} bets; '
+                   f'running total {p["cumulative"]:+.1f}</title></circle>')
+
+    last_x, last_y = points[-1]
+    svg.append(f'<text x="{last_x:.1f}" y="{last_y - 10:.1f}" class="bar-label" text-anchor="end">'
+               f'{trend[-1]["cumulative"]:+.1f} units</text>')
+    svg.append('</svg>')
+    return "".join(svg)

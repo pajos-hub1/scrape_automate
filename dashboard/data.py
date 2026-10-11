@@ -4,7 +4,12 @@ without needing to touch markup.
 """
 from datetime import datetime, timezone
 
-from track.report import accuracy_stats, list_model_versions
+from config import DASHBOARD_MODELS
+from track.report import _ensure_closing_prices, accuracy_stats, list_model_versions
+
+# Every query below shows only DASHBOARD_MODELS (retired models' history
+# stays in the DB and the CLI report).
+_MODELS_IN = f"p.model_version IN ({','.join('?' for _ in DASHBOARD_MODELS)})"
 
 
 def get_meta(conn):
@@ -29,7 +34,8 @@ def get_meta(conn):
             """SELECT MAX(f.round_number) AS mr
                FROM predictions p JOIN fixtures f ON f.fixture_id = p.fixture_ref
                LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
-               WHERE pr.result_id IS NULL"""
+               WHERE pr.result_id IS NULL AND """ + _MODELS_IN,
+            DASHBOARD_MODELS,
         ).fetchone()
         pending_round = row["mr"] if row else None
 
@@ -56,9 +62,9 @@ def _predictions_by_fixture(conn, fixture_ids):
                    p.model_version, p.market, p.label, p.confidence
             FROM predictions p
             JOIN fixtures f ON f.fixture_id = p.fixture_ref
-            WHERE p.fixture_ref IN ({placeholders})
+            WHERE p.fixture_ref IN ({placeholders}) AND {_MODELS_IN}
             ORDER BY f.match_number, p.market, p.model_version""",
-        fixture_ids,
+        list(fixture_ids) + DASHBOARD_MODELS,
     ).fetchall()
 
     fixtures = {}
@@ -97,7 +103,8 @@ def get_pending_batches(conn):
            FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
-           WHERE pr.result_id IS NULL"""
+           WHERE pr.result_id IS NULL AND """ + _MODELS_IN,
+        DASHBOARD_MODELS,
     ).fetchall()
 
     by_ts = {}
@@ -126,16 +133,21 @@ def get_reconciled_round(conn, season_id, round_number):
     reset to 1 every season, so round_number alone can't distinguish
     "season 3's round 4" from "season 1's round 4."
     """
+    _ensure_closing_prices(conn)
     rows = conn.execute(
-        """SELECT f.team_a, f.team_b, m.ft_a, m.ft_b, m.ht_a, m.ht_b, m.scraped_at,
-                  p.model_version, pr.market, pr.predicted_label, pr.actual_label, pr.correct
+        f"""SELECT f.team_a, f.team_b, m.ft_a, m.ft_b, m.ht_a, m.ht_b, m.scraped_at,
+                  p.model_version, pr.market, pr.predicted_label, pr.actual_label, pr.correct,
+                  cp.price
            FROM all_prediction_results pr
            JOIN all_predictions p ON p.prediction_id = pr.prediction_id
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            JOIN matches m ON m.match_id = pr.match_ref
-           WHERE m.season_id = ? AND m.round_number = ?
+           LEFT JOIN temp.closing_prices cp
+             ON cp.fixture_id = p.fixture_ref AND cp.market = pr.market
+            AND cp.selection = pr.predicted_label
+           WHERE m.season_id = ? AND m.round_number = ? AND {_MODELS_IN}
            ORDER BY f.team_a, pr.market, p.model_version""",
-        (season_id, round_number),
+        [season_id, round_number] + DASHBOARD_MODELS,
     ).fetchall()
     if not rows:
         return None
@@ -151,7 +163,9 @@ def get_reconciled_round(conn, season_id, round_number):
         })
         m["markets"].setdefault(r["market"], {})[r["model_version"]] = {
             "predicted": r["predicted_label"], "actual": r["actual_label"],
-            "correct": bool(r["correct"]),
+            "correct": bool(r["correct"]), "price": r["price"],
+            # 1-unit flat stake at the closing price; None when unpriced.
+            "profit": None if r["price"] is None else (r["price"] - 1 if r["correct"] else -1.0),
         }
     return {"season_id": season_id, "round_number": round_number, "status": "reconciled",
             "sort_key": sort_key, "matches": list(matches.values())}
@@ -271,7 +285,11 @@ def get_accuracy_trend(conn, model_version=None, market=None, season_ids=None):
                FROM all_prediction_results pr
                JOIN matches m ON m.match_id = pr.match_ref"""
     where, params = [], []
-    if model_version is not None:
+    if isinstance(model_version, (list, tuple)):
+        query += " JOIN all_predictions p ON p.prediction_id = pr.prediction_id"
+        where.append(f"p.model_version IN ({','.join('?' for _ in model_version)})")
+        params.extend(model_version)
+    elif model_version is not None:
         query += " JOIN all_predictions p ON p.prediction_id = pr.prediction_id"
         where.append("p.model_version = ?")
         params.append(model_version)
@@ -296,4 +314,37 @@ def get_models_and_stats(conn, season_ids=None):
     """{model_version: accuracy_stats(...)} for every model with live
     predictions -- the per-model comparison the dashboard's accuracy
     section renders one chart per model from."""
-    return {m: accuracy_stats(conn, model_version=m, season_ids=season_ids) for m in list_model_versions(conn)}
+    return {m: accuracy_stats(conn, model_version=m, season_ids=season_ids)
+            for m in list_model_versions(conn) if m in DASHBOARD_MODELS}
+
+
+def get_profit_trend(conn, season_ids, exclude_markets=("CorrectScore",)):
+    """Per (season, round), chronological: the live model's flat 1-unit
+    stake profit that round (every priced pick across all markets except
+    exclude_markets) and the running total. Correct Score is excluded by
+    default: its history is dominated by the old "Other" bug's near-certain
+    losses (~-97%) and long-odds swings that would swamp every other market.
+    """
+    _ensure_closing_prices(conn)
+    seasons = ",".join("?" for _ in season_ids) or "NULL"
+    excl = ",".join("?" for _ in exclude_markets) or "NULL"
+    rows = conn.execute(
+        f"""SELECT m.season_id, m.round_number, COUNT(*) AS bets,
+                   SUM(CASE WHEN pr.correct = 1 THEN cp.price - 1 ELSE -1 END) AS profit
+            FROM all_prediction_results pr
+            JOIN all_predictions p ON p.prediction_id = pr.prediction_id
+            JOIN matches m ON m.match_id = pr.match_ref
+            JOIN temp.closing_prices cp
+              ON cp.fixture_id = p.fixture_ref AND cp.market = pr.market
+             AND cp.selection = pr.predicted_label
+            WHERE {_MODELS_IN} AND m.season_id IN ({seasons}) AND pr.market NOT IN ({excl})
+            GROUP BY m.season_id, m.round_number
+            ORDER BY m.season_id, m.round_number""",
+        DASHBOARD_MODELS + list(season_ids) + list(exclude_markets),
+    ).fetchall()
+    out, running = [], 0.0
+    for i, r in enumerate(rows):
+        running += r["profit"]
+        out.append({"index": i, "label": f'S{r["season_id"]} R{r["round_number"]}',
+                    "bets": r["bets"], "profit": r["profit"], "cumulative": running})
+    return out

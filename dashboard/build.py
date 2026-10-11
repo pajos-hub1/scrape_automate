@@ -5,10 +5,10 @@ GitHub Pages copy always reflects the latest scrape/predict/track pass.
 import html
 from pathlib import Path
 
-from config import BASE_DIR, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
-from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
-from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_recent_season_ids,
-                            get_round_history)
+from config import BASE_DIR, DASHBOARD_MODELS, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
+from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, market_accuracy_chart
+from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_profit_trend,
+                            get_recent_season_ids, get_round_history)
 from dashboard.health import get_health
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
@@ -105,7 +105,7 @@ def _render_market_tiles(stats):
             continue
         acc = s["model_correct"] / s["n"]
         tiles.append(_stat_tile(MARKET_LABELS[market], f"{acc * 100:.1f}%",
-                                 f"{s['model_correct']}/{s['n']} predictions, both models blended"))
+                                 f"{s['model_correct']}/{s['n']} predictions"))
     return "".join(tiles)
 
 
@@ -146,7 +146,7 @@ def _render_round_panel(entry, index, total):
                     cells.append("<td>&mdash;</td>")
                     continue
                 lines = [
-                    f'<div class="model-pred"><span class="model-tag">{_model_tag(mv)}</span> '
+                    f'<div class="model-pred">'
                     f'{html.escape(e["label"])} <span class="conf">{e["confidence"] * 100:.0f}%</span></div>'
                     for mv, e in sorted(by_model.items())
                 ]
@@ -177,6 +177,7 @@ def _render_round_panel(entry, index, total):
         label = f'Round {entry["round_number"]} (no prediction)'
     else:
         rows = []
+        market_profit = {}
         for m in entry["matches"]:
             cells = []
             for market in MARKET_ORDER:
@@ -189,19 +190,32 @@ def _render_round_panel(entry, index, total):
                 for mv, e in sorted(by_model.items()):
                     mark = "&#10003;" if e["correct"] else "&#10007;"
                     cls = "hit" if e["correct"] else "miss"
-                    lines.append(f'<div class="model-pred {cls}"><span class="model-tag">{_model_tag(mv)}</span> '
-                                  f'{mark} {html.escape(e["predicted"])}</div>')
+                    money = ""
+                    if e["profit"] is not None:
+                        money = f' <span class="conf">@{e["price"]:.2f} {e["profit"]:+.2f}</span>'
+                        market_profit[market] = market_profit.get(market, 0.0) + e["profit"]
+                    lines.append(f'<div class="model-pred {cls}">{mark} {html.escape(e["predicted"])}{money}</div>')
                 cells.append(f'<td>{"".join(lines)}</td>')
             score = f'{m["ft_a"]}-{m["ft_b"]}' + (f' (HT {m["ht_a"]}-{m["ht_b"]})' if m["ht_a"] is not None else "")
             rows.append(
                 f'<tr><td class="teams">{html.escape(m["team_a"])} <span class="vs">vs</span> '
                 f'{html.escape(m["team_b"])} <span class="score">{score}</span></td>{"".join(cells)}</tr>'
             )
+        total_cells = "".join(
+            f'<td class="{"hit" if market_profit[mk] > 0 else "miss"}">{market_profit[mk]:+.2f}</td>'
+            if mk in market_profit else "<td>&mdash;</td>"
+            for mk in MARKET_ORDER
+        )
+        round_total = sum(market_profit.values())
+        rows.append(f'<tr class="round-total"><td><strong>Round profit</strong> '
+                    f'<span class="conf">{round_total:+.2f} units</span></td>{total_cells}</tr>')
         body = (
+            '<p class="section-note">Each pick shows its closing odds and its result on a 1-unit '
+            'stake (win: odds &minus; 1, loss: &minus;1). Bottom row: this round\'s total per market.</p>'
             f'<div class="table-scroll"><table><thead><tr><th>Result</th>{header_cells}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div>'
         )
-        label = f'Round {entry["round_number"]} (reconciled)'
+        label = f'Round {entry["round_number"]} (reconciled, {round_total:+.2f} units)'
 
     active_cls = " active" if index == total - 1 else ""
     return f'<div class="round-panel{active_cls}" data-label="{html.escape(label)}">{body}</div>'
@@ -247,7 +261,7 @@ def _render_market_trend_sections(conn, season_ids):
     shared 0-100% line blended together with them."""
     parts = []
     for market in MARKET_ORDER:
-        trend = get_accuracy_trend(conn, market=market, season_ids=season_ids)
+        trend = get_accuracy_trend(conn, model_version=DASHBOARD_MODELS, market=market, season_ids=season_ids)
         parts.append(f'<h3>{html.escape(MARKET_LABELS[market])}</h3>')
         parts.append(accuracy_trend_chart(trend))
     return "".join(parts)
@@ -378,6 +392,7 @@ td.teams {{ font-weight: 500; }}
 td.hit {{ color: var(--good); }}
 td.miss {{ color: var(--bad); }}
 .model-pred {{ margin-bottom: 2px; }}
+tr.round-total td {{ border-top: 2px solid var(--axis); font-variant-numeric: tabular-nums; }}
 .model-pred.hit {{ color: var(--good); }}
 .model-pred.miss {{ color: var(--bad); }}
 .model-pred-actual {{ color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 3px; }}
@@ -428,8 +443,7 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 <section>
   <h2>Accuracy by market</h2>
-  <p class="section-note">Both live models blended -- see "Accuracy by market" below for the
-  per-model breakdown. Markets aren't blended together here: CorrectScore's exact-match
+  <p class="section-note">All-time, live model only. Markets aren't blended together here: CorrectScore's exact-match
   difficulty sits on a totally different scale from a three-way pick like 1X2, so averaging them
   into one number would hide more than it shows.</p>
   <div class="tiles">{market_tiles}</div>
@@ -454,6 +468,10 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
   over thousands of bets. "Odds fav" = always backing the bookmaker's favourite. Correct Score's
   history includes months of "Other" picks from a since-fixed bug, which almost never won.</p>
   {profit_html}
+  <h3>Running profit, round by round (last {dashboard_seasons} seasons, {trend_seasons})</h3>
+  <p class="section-note">Live model, every priced pick except Correct Score, 1 unit each. Hover a
+  point for that round's own profit; the round browser above shows it per game.</p>
+  {profit_trend_html}
 </section>
 
 <section>
@@ -467,8 +485,8 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 <section>
   <h2>Accuracy trend across rounds, per market</h2>
-  <p class="section-note">Last {dashboard_seasons} seasons only ({trend_seasons}), both live models
-  blended, one line per market -- see above for why markets aren't combined into a single line.</p>
+  <p class="section-note">Last {dashboard_seasons} seasons only ({trend_seasons}), live model only,
+  one line per market -- see above for why markets aren't combined into a single line.</p>
   {market_trend_html}
 </section>
 
@@ -538,7 +556,7 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 
 def build_dashboard(conn, out_path=OUT_PATH):
     meta = get_meta(conn)
-    stats = accuracy_stats(conn)  # blended across models -- used for the per-market tiles
+    stats = accuracy_stats(conn, model_version=DASHBOARD_MODELS)  # per-market tiles
     models_and_stats = get_models_and_stats(conn)
     # Only the per-round trend lines are limited to the last DASHBOARD_SEASONS
     # seasons -- all-time, they're 700+ points squeezed into one chart.
@@ -558,6 +576,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         profit_html=_render_profit_section(conn, sorted(models_and_stats)),
         probability_html=_render_probability_section(conn, sorted(models_and_stats)),
         health_html=_render_health_section(get_health(conn)),
+        profit_trend_html=cumulative_profit_chart(get_profit_trend(conn, season_ids)),
     )
 
     out_path = Path(out_path)

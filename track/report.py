@@ -25,7 +25,8 @@ def accuracy_stats(conn, model_version=None, season_ids=None):
     """model_version=None blends every model's predictions together (the
     original single-model behavior, kept as the default so existing
     callers -- the dashboard's overall tile -- don't need to change).
-    Pass a specific model_version to isolate just that model's track record,
+    Pass a specific model_version (or a list of them) to isolate just that
+    track record,
     and/or season_ids to restrict to matches from those seasons.
     """
     join, season_where, params = _season_scope(season_ids)
@@ -33,7 +34,10 @@ def accuracy_stats(conn, model_version=None, season_ids=None):
                FROM all_prediction_results pr
                JOIN all_predictions p ON p.prediction_id = pr.prediction_id""" + join
     where = [season_where] if season_where else []
-    if model_version is not None:
+    if isinstance(model_version, (list, tuple)):
+        where.append(f"p.model_version IN ({','.join('?' for _ in model_version)})")
+        params.extend(model_version)
+    elif model_version is not None:
         where.append("p.model_version = ?")
         params.append(model_version)
     if where:

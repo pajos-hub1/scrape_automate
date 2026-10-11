@@ -17,6 +17,11 @@ ARCHIVE_KEEP_DAYS = 2
 # recent N seasons; everything else on the dashboard stays all-time.
 DASHBOARD_SEASONS = 2
 
+# Models the dashboard shows. Retired models (ml_v1, blend_v1 -- see
+# run.py DEFAULT_MODELS) keep their history in the DB and in the CLI
+# report (`run.py track`), but are left off the dashboard.
+DASHBOARD_MODELS = ["baseline_v0"]
+
 # Results page (Selenium-rendered carousel of played rounds for the two
 # seasons bet9ja currently exposes: "current" and "previous").
 # NOTE: matchId in this URL is tied to a specific live match/session on
