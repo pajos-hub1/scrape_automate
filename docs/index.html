@@ -103,12 +103,17 @@ footer { color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }
 <header>
   <h1>Zoom Prediction Dashboard</h1>
   <div style="display:flex; align-items:center; gap:12px;">
-    <span class="meta">Generated 2026-10-11T12:14:10+00:00 UTC</span>
+    <span class="meta">Generated 2026-10-11T12:29:25+00:00 UTC</span>
     <button id="theme-toggle" aria-label="Toggle dark mode">&#9680;</button>
   </div>
 </header>
 
-<div class="tiles"><div class="tile"><div class="tile-value">33 / 38</div><div class="tile-label">Current season round</div></div><div class="tile"><div class="tile-value">28</div><div class="tile-label">Seasons preserved</div><div class="tile-sub">26 archived</div></div><div class="tile"><div class="tile-value">2026-10-11 12:12:22 UTC</div><div class="tile-label">Last scraped</div></div></div>
+<div class="tiles"><div class="tile"><div class="tile-value">33 / 38</div><div class="tile-label">Current season round</div></div><div class="tile"><div class="tile-value">28</div><div class="tile-label">Seasons preserved</div><div class="tile-sub">26 archived</div></div><div class="tile"><div class="tile-value">2026-10-11 12:27:37 UTC</div><div class="tile-label">Last scraped</div></div></div>
+
+<section>
+  <h2>Pipeline health</h2>
+  <div class="tiles"><div class="tile"><div class="tile-value">Degraded</div><div class="tile-label">Pipeline (last 24h)</div><div class="tile-sub">58 ok / 10 failed runs</div></div><div class="tile"><div class="tile-value">10-11 12:10 UTC</div><div class="tile-label">Last successful run</div></div><div class="tile"><div class="tile-value">10-11 10:54 UTC</div><div class="tile-label">Last failed run</div></div><div class="tile"><div class="tile-value">47</div><div class="tile-label">Rounds missed (24h)</div><div class="tile-sub">S27 R2, S27 R3, S27 R9, S27 R10, S27 R11, S27 R12</div></div></div>
+</section>
 
 <section>
   <h2>Accuracy by market</h2>
@@ -141,6 +146,15 @@ footer { color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }
 </section>
 
 <section>
+  <h2>Probability quality: log-loss, per market</h2>
+  <p class="section-note">Grades the predicted probabilities, not just the top pick -- lower is
+  better. Each model column sits next to the bookmaker's own (margin-removed) odds scored on the
+  exact same predictions; green would mean the model's probabilities beat the market's. Correct
+  Score is left out (the model's top-8 grid and the ~35 priced scores aren't comparable).</p>
+  <div class="table-scroll"><table><thead><tr><th>Market</th><th>Base</th><th>Odds</th><th>Bln</th><th>Odds</th><th>ML</th><th>Odds</th></tr></thead><tbody><tr><td>1X2</td><td class="">0.9752</td><td>0.9752</td><td class="miss">0.9777</td><td>0.9765</td><td class="miss">0.9954</td><td>0.9751</td></tr><tr><td>BTTS</td><td class="">0.6899</td><td>0.6899</td><td class="">0.6900</td><td>0.6900</td><td class="miss">0.6946</td><td>0.6899</td></tr><tr><td>O/U 2.5</td><td class="hit">0.6890</td><td>0.6890</td><td class="">0.6890</td><td>0.6890</td><td class="miss">0.6905</td><td>0.6891</td></tr><tr><td>O/U 1.5</td><td class="hit">0.5666</td><td>0.5666</td><td class="hit">0.5668</td><td>0.5668</td><td class="miss">0.5680</td><td>0.5666</td></tr><tr><td>HT 1X2</td><td class="">1.0357</td><td>1.0356</td><td class="hit">1.0365</td><td>1.0365</td><td class="miss">1.0425</td><td>1.0354</td></tr><tr><td>HT O/U 1.5</td><td class="hit">0.6617</td><td>0.6618</td><td class="">0.6614</td><td>0.6614</td><td class="">0.6622</td><td>0.6619</td></tr><tr><td>HT O/U 0.5</td><td class="hit">0.5687</td><td>0.5687</td><td class="hit">0.5701</td><td>0.5701</td><td class="miss">0.5696</td><td>0.5687</td></tr></tbody></table></div>
+</section>
+
+<section>
   <h2>Accuracy trend across rounds, per market</h2>
   <p class="section-note">Last 2 seasons only (S27, S28), both live models
   blended, one line per market -- see above for why markets aren't combined into a single line.</p>
@@ -148,8 +162,10 @@ footer { color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }
 </section>
 
 <footer>
-  <p><strong>Reading this dashboard:</strong> two models run live in parallel and get tracked
-  independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
+  <p><strong>Reading this dashboard:</strong> since 2026-10-11 only <code>baseline_v0</code> runs
+  live -- <code>ml_v1</code> and <code>blend_v1</code> were retired after ~20k predictions showed
+  neither beating the odds (see the return and log-loss tables); their history stays above. Original
+  notes: three models ran live in parallel and were tracked independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
   BTTS, O/U 2.5, O/U 1.5, HT 1X2, HT O/U 1.5/0.5) and a Poisson goal-expectation model elsewhere
   (Correct Score) -- not a trained model. <code>ml_v1</code> is a real logistic-regression (1X2, BTTS)
   + Poisson-regression (goals) model, trained only on team form/H2H/season-rate/cross-season-strength
