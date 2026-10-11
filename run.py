@@ -3,7 +3,7 @@ import argparse
 import sys
 
 from config import DB_PATH, ROUNDS_PER_SEASON
-from db.archive import archive_if_needed
+from db.archive import archive_if_needed, merge_archives_if_needed
 from db.connection import get_connection
 from db.storage import pack
 from db.upsert import (
@@ -33,6 +33,14 @@ PREDICTORS = {
     "ml_v1": MLPredictor,
     "blend_v1": BlendPredictor,
 }
+
+# What `predict`/`cycle` run by default. Only the odds-based baseline: Zoom's
+# odds turned out to be near-perfectly calibrated (see track/report.py
+# profit_stats), and over ~20k live predictions ml_v1 and blend_v1 never
+# beat them beyond noise -- so they're retired from the live cycle (2026-10)
+# to save the per-run training time. Their code and history stay; pass
+# --model ml_v1 blend_v1 to run them again.
+DEFAULT_MODELS = ["baseline"]
 
 
 def cmd_scrape(args):
@@ -227,6 +235,12 @@ def cmd_archive(args):
     print("=== Archive summary ===")
     for k, v in summary.items():
         print(f"  {k}: {v}")
+    # After the connection above closes -- it has the archives attached.
+    merge = merge_archives_if_needed(force=getattr(args, "merge", False))
+    if merge["merged"]:
+        print("=== Archive merge ===")
+        for k, v in merge.items():
+            print(f"  {k}: {v}")
 
 
 def cmd_pack(args):
@@ -266,7 +280,7 @@ def main():
     features_p.set_defaults(func=cmd_features)
 
     predict_p = sub.add_parser("predict", help="Predict the earliest unplayed round")
-    predict_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=list(PREDICTORS))
+    predict_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=DEFAULT_MODELS)
     predict_p.set_defaults(func=cmd_predict)
 
     track_p = sub.add_parser("track", help="Reconcile predictions vs actuals and report accuracy")
@@ -280,6 +294,7 @@ def main():
 
     archive_p = sub.add_parser("archive", help="Move old reconciled rows into a frozen archive file if the DB is large")
     archive_p.add_argument("--force", action="store_true", help="Archive even if under the size trigger")
+    archive_p.add_argument("--merge", action="store_true", help="Merge all archive files into one now")
     archive_p.set_defaults(func=cmd_archive)
 
     pack_p = sub.add_parser("pack", help="Gzip data/zoom.db -> data/zoom.db.gz for committing")
@@ -287,7 +302,7 @@ def main():
 
     cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> archive -> dashboard -> pack")
     cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
-    cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=list(PREDICTORS))
+    cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=DEFAULT_MODELS)
     cycle_p.set_defaults(func=cmd_cycle)
 
     args = parser.parse_args()

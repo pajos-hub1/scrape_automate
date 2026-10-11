@@ -6,6 +6,8 @@ ml_v1 running in parallel), the report prints one table per model plus a
 head-to-head comparison, rather than blending both models' predictions
 into one misleading "model" number.
 """
+import json
+import math
 from collections import defaultdict
 
 
@@ -115,6 +117,66 @@ def profit_stats(conn, model_version, season_ids=None):
     return stats
 
 
+PROB_MARKETS = ["1X2", "BTTS", "OU2.5", "OU1.5", "HT_1X2", "HT_OU1.5", "HT_OU0.5"]
+
+
+def probability_stats(conn, model_version):
+    """How good the predicted *probabilities* are, not just the top pick:
+    mean log-loss (-ln p(actual); punishes confident misses hard) and mean
+    multi-class Brier score (sum of squared errors over every outcome), both
+    lower-is-better. Each is scored against the de-margined closing odds on
+    exactly the same predictions, so "model log-loss < odds log-loss" would
+    mean the model's probabilities beat the market's.
+
+    CorrectScore is left out: the model reports a top-8 + "Other" grid
+    while the odds price ~35 exact scores, so the two aren't comparable.
+    """
+    _ensure_closing_prices(conn)
+    book = {}
+    for r in conn.execute(
+        "SELECT fixture_id, market, selection, price FROM temp.closing_prices "
+        f"WHERE market IN ({','.join('?' for _ in PROB_MARKETS)})", PROB_MARKETS
+    ):
+        book.setdefault((r["fixture_id"], r["market"]), {})[r["selection"]] = r["price"]
+
+    rows = conn.execute(
+        f"""SELECT pr.market, pr.actual_label, p.fixture_ref, p.probabilities
+            FROM all_prediction_results pr
+            JOIN all_predictions p ON p.prediction_id = pr.prediction_id
+            WHERE p.model_version = ? AND pr.market IN ({','.join('?' for _ in PROB_MARKETS)})""",
+        [model_version] + PROB_MARKETS,
+    ).fetchall()
+
+    stats = defaultdict(lambda: {"n": 0, "model_ll": 0.0, "odds_ll": 0.0, "model_brier": 0.0, "odds_brier": 0.0})
+    for r in rows:
+        prices = book.get((r["fixture_ref"], r["market"]))
+        if not prices:
+            continue
+        inv = {sel: 1 / price for sel, price in prices.items()}
+        total = sum(inv.values())
+        odds_probs = {sel: v / total for sel, v in inv.items()}
+        model_probs = json.loads(r["probabilities"])
+        if r["actual_label"] not in odds_probs:
+            continue
+
+        s = stats[r["market"]]
+        s["n"] += 1
+        s["model_ll"] += _log_loss(model_probs, r["actual_label"])
+        s["odds_ll"] += _log_loss(odds_probs, r["actual_label"])
+        s["model_brier"] += _brier(model_probs, r["actual_label"])
+        s["odds_brier"] += _brier(odds_probs, r["actual_label"])
+    return stats
+
+
+def _log_loss(probs, actual):
+    return -math.log(max(probs.get(actual, 0.0), 1e-6))
+
+
+def _brier(probs, actual):
+    labels = set(probs) | {actual}
+    return sum((probs.get(k, 0.0) - (1.0 if k == actual else 0.0)) ** 2 for k in labels)
+
+
 def roi(returns, bets):
     return (returns - bets) / bets if bets else None
 
@@ -204,6 +266,19 @@ def _print_profit_table(stats):
     _row("Overall", tot)
 
 
+def _print_probability_table(stats):
+    header = f"{'Market':10s} {'N':>6s} {'LogLoss':>8s} {'Odds LL':>8s} {'Brier':>7s} {'Odds Br':>8s}"
+    print(header)
+    print("-" * len(header))
+    for market in PROB_MARKETS:
+        s = stats.get(market)
+        if not s or not s["n"]:
+            continue
+        n = s["n"]
+        print(f"{market:10s} {n:6d} {s['model_ll'] / n:8.4f} {s['odds_ll'] / n:8.4f} "
+              f"{s['model_brier'] / n:7.4f} {s['odds_brier'] / n:8.4f}")
+
+
 def print_report(conn):
     models = list_model_versions(conn)
     if not models:
@@ -226,5 +301,10 @@ def print_report(conn):
     for m in models:
         print(f"\n--- {m} ---")
         _print_profit_table(profit_stats(conn, m))
+
+    print("\n=== Probability quality (lower is better; same predictions scored both ways) ===")
+    for m in models:
+        print(f"\n--- {m} ---")
+        _print_probability_table(probability_stats(conn, m))
     print("\n(Overall/per-market blends CorrectScore's exact-match difficulty with three-way")
     print(" 1X2 etc -- read individual market rows for real signal, not just Overall.)")

@@ -9,7 +9,8 @@ from config import BASE_DIR, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
 from dashboard.charts import accuracy_trend_chart, market_accuracy_chart
 from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_recent_season_ids,
                             get_round_history)
-from track.report import accuracy_stats, profit_stats, roi, verdict
+from dashboard.health import get_health
+from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
 
@@ -42,6 +43,50 @@ def _render_meta_section(meta):
         _stat_tile("Last scraped", (meta["last_scraped"] or "n/a").replace("T", " ").split("+")[0] + " UTC"),
     ]
     return f'<div class="tiles">{"".join(tiles)}</div>'
+
+
+def _fmt_ts(ts):
+    return ts.strftime("%m-%d %H:%M UTC") if ts else "never"
+
+
+def _render_health_section(health):
+    """Top-of-page status: is the pipeline actually running and saving?"""
+    tiles = []
+    runs = health["runs"]
+    if runs is not None:
+        status = "OK" if runs["total"] and runs["failed"] == 0 else (
+            "Degraded" if runs["total"] and runs["failed"] < runs["total"] else "Failing")
+        tiles.append(_stat_tile("Pipeline (last 24h)", status,
+                                f"{runs['total'] - runs['failed']} ok / {runs['failed']} failed runs"))
+        tiles.append(_stat_tile("Last successful run", _fmt_ts(runs["last_success"])))
+        tiles.append(_stat_tile("Last failed run", _fmt_ts(runs["last_failure"])))
+    missed = health["missed_rounds"]
+    tiles.append(_stat_tile("Rounds missed (24h)", len(missed),
+                            ", ".join(missed[:6]) if missed else "every round got a prediction"))
+    return f'<div class="tiles">{"".join(tiles)}</div>'
+
+
+def _render_probability_section(conn, models):
+    """Log-loss per market, per model, next to the de-margined odds' own
+    log-loss on the same predictions (see track/report.probability_stats)."""
+    if not models:
+        return '<p class="empty">No reconciled predictions yet.</p>'
+    per_model = {m: probability_stats(conn, m) for m in models}
+    header = "".join(f"<th>{html.escape(_model_tag(m))}</th><th>Odds</th>" for m in models)
+    rows = []
+    for market in PROB_MARKETS:
+        cells = ""
+        for m in models:
+            s = per_model[m].get(market)
+            if not s or not s["n"]:
+                cells += "<td>n/a</td><td>n/a</td>"
+                continue
+            model_ll, odds_ll = s["model_ll"] / s["n"], s["odds_ll"] / s["n"]
+            cls = "hit" if model_ll < odds_ll else "miss" if model_ll > odds_ll + 0.0005 else ""
+            cells += f'<td class="{cls}">{model_ll:.4f}</td><td>{odds_ll:.4f}</td>'
+        rows.append(f"<tr><td>{html.escape(MARKET_LABELS[market])}</td>{cells}</tr>")
+    return (f'<div class="table-scroll"><table><thead><tr><th>Market</th>{header}</tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
 def _render_market_tiles(stats):
@@ -377,6 +422,11 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 {meta_section}
 
 <section>
+  <h2>Pipeline health</h2>
+  {health_html}
+</section>
+
+<section>
   <h2>Accuracy by market</h2>
   <p class="section-note">Both live models blended -- see "Accuracy by market" below for the
   per-model breakdown. Markets aren't blended together here: CorrectScore's exact-match
@@ -407,6 +457,15 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
+  <h2>Probability quality: log-loss, per market</h2>
+  <p class="section-note">Grades the predicted probabilities, not just the top pick -- lower is
+  better. Each model column sits next to the bookmaker's own (margin-removed) odds scored on the
+  exact same predictions; green would mean the model's probabilities beat the market's. Correct
+  Score is left out (the model's top-8 grid and the ~35 priced scores aren't comparable).</p>
+  {probability_html}
+</section>
+
+<section>
   <h2>Accuracy trend across rounds, per market</h2>
   <p class="section-note">Last {dashboard_seasons} seasons only ({trend_seasons}), both live models
   blended, one line per market -- see above for why markets aren't combined into a single line.</p>
@@ -414,8 +473,10 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <footer>
-  <p><strong>Reading this dashboard:</strong> two models run live in parallel and get tracked
-  independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
+  <p><strong>Reading this dashboard:</strong> since 2026-10-11 only <code>baseline_v0</code> runs
+  live -- <code>ml_v1</code> and <code>blend_v1</code> were retired after ~20k predictions showed
+  neither beating the odds (see the return and log-loss tables); their history stays above. Original
+  notes: three models ran live in parallel and were tracked independently. <code>baseline_v0</code> is a placeholder using bookmaker odds where scraped (1X2,
   BTTS, O/U 2.5, O/U 1.5, HT 1X2, HT O/U 1.5/0.5) and a Poisson goal-expectation model elsewhere
   (Correct Score) -- not a trained model. <code>ml_v1</code> is a real logistic-regression (1X2, BTTS)
   + Poisson-regression (goals) model, trained only on team form/H2H/season-rate/cross-season-strength
@@ -495,6 +556,8 @@ def build_dashboard(conn, out_path=OUT_PATH):
         dashboard_seasons=DASHBOARD_SEASONS,
         trend_seasons=", ".join(f"S{s}" for s in sorted(season_ids)) or "none yet",
         profit_html=_render_profit_section(conn, sorted(models_and_stats)),
+        probability_html=_render_probability_section(conn, sorted(models_and_stats)),
+        health_html=_render_health_section(get_health(conn)),
     )
 
     out_path = Path(out_path)

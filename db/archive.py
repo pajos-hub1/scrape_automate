@@ -188,3 +188,72 @@ def archive_if_needed(conn, force=False):
         "size_after_mb": round(db_size_mb(conn), 1),
     })
     return summary
+
+
+# Merge every archive into one once there are this many -- comfortably under
+# MAX_ATTACHED, so the attach limit is never actually hit.
+MERGE_AT = 6
+
+
+def merge_archives_if_needed(force=False, db_path=None):
+    """Combine all archive files into a single new one (next number), then
+    delete the old ones. Runs on its own connection, after the cycle's main
+    connection is closed, since that one has the archives attached.
+
+    Columns follow the live schema (like the all_* views): any column an
+    older archive lacks comes through as NULL.
+    """
+    import sqlite3
+    from config import DB_PATH
+
+    db_path = db_path or DB_PATH
+    dbs = archive_files()
+    if len(dbs) < 2 or (not force and len(dbs) < MERGE_AT):
+        return {"merged": False, "archive_files": len(dbs)}
+
+    target = _next_archive_path()
+    live = sqlite3.connect(str(db_path))
+    try:
+        schema = {t: [r[1] for r in live.execute(f"PRAGMA table_info({t})")] for t in ARCHIVED_TABLES}
+    finally:
+        live.close()
+
+    conn = sqlite3.connect(str(target))
+    try:
+        for i, db in enumerate(dbs):
+            conn.execute(f"ATTACH DATABASE ? AS src{i}", (str(db),))
+        for table, cols in schema.items():
+            selects = []
+            for i in range(len(dbs)):
+                have = {r[1] for r in conn.execute(f"PRAGMA src{i}.table_info({table})")}
+                if have:
+                    exprs = [c if c in have else f"NULL AS {c}" for c in cols]
+                    selects.append(f"SELECT {', '.join(exprs)} FROM src{i}.{table}")
+            conn.execute(f"CREATE TABLE main.{table} AS " + " UNION ALL ".join(selects))
+        conn.execute("CREATE INDEX idx_arc_pred ON predictions(prediction_id)")
+        conn.execute("CREATE INDEX idx_arc_pred_fixture ON predictions(fixture_ref)")
+        conn.execute("CREATE INDEX idx_arc_pr ON prediction_results(prediction_id)")
+        conn.execute("CREATE INDEX idx_arc_pr_match ON prediction_results(match_ref)")
+        conn.execute("CREATE INDEX idx_arc_odds ON odds(fixture_id, market, selection)")
+        conn.commit()
+
+        expected = {t: sum(conn.execute(f"SELECT COUNT(*) FROM src{i}.{t}").fetchone()[0]
+                           for i in range(len(dbs))
+                           if conn.execute(f"PRAGMA src{i}.table_info({t})").fetchone())
+                    for t in ARCHIVED_TABLES}
+        got = {t: conn.execute(f"SELECT COUNT(*) FROM main.{t}").fetchone()[0] for t in ARCHIVED_TABLES}
+        if got != expected:
+            raise RuntimeError(f"archive merge row counts don't match: {got} vs {expected}")
+        for i in range(len(dbs)):
+            conn.execute(f"DETACH DATABASE src{i}")
+    except Exception:
+        conn.close()
+        os.remove(target)
+        raise
+    conn.close()
+
+    pack(target)
+    for db in dbs:
+        os.remove(db)
+        os.remove(str(db) + ".gz")
+    return {"merged": True, "from_files": [d.name for d in dbs], "into": target.name, "rows": got}

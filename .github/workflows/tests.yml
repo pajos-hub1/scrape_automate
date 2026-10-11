@@ -1,0 +1,38 @@
+name: Tests
+
+# Runs on code changes only -- the cycle's automated commits touch nothing
+# but data/ and docs/, so they're excluded rather than running ~96x a day.
+on:
+  push:
+    paths-ignore: ["data/**", "docs/**"]
+  pull_request:
+    paths-ignore: ["data/**", "docs/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          # The tests build their own throwaway DBs; skip the real data.
+          sparse-checkout: |
+            /*
+            !data/
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: python -m pytest -q tests
