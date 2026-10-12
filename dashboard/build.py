@@ -6,10 +6,11 @@ import html
 from pathlib import Path
 
 from config import BASE_DIR, DASHBOARD_MODELS, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
-from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, market_accuracy_chart
+from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, fmt_naira, market_accuracy_chart
 from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_profit_trend,
                             get_recent_season_ids, get_round_history)
 from dashboard.health import get_health
+from track.betslips import STAKE_NAIRA, build_slips, load_rounds, summarize
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -87,6 +88,103 @@ def _render_probability_section(conn, models):
         rows.append(f"<tr><td>{html.escape(MARKET_LABELS[market])}</td>{cells}</tr>")
     return (f'<div class="table-scroll"><table><thead><tr><th>Market</th>{header}</tr></thead>'
             f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+
+SLIP_MARKET_LABELS = {"1X2": "1X2", "OU1.5": "O/U 1.5", "HT_OU0.5": "HT O/U 0.5", "BTTS": "BTTS",
+                      "HT_OU1.5": "HT O/U 1.5", "OU2.5": "O/U 2.5"}
+
+
+def _naira(v):
+    return f"₦{v:,.0f}"
+
+
+def _render_slip(slip):
+    rows = []
+    for leg in slip["legs"]:
+        if leg["won"] is None:
+            res, cls = "pending", ""
+        else:
+            res, cls = ("&#10003;", "hit") if leg["won"] else ("&#10007;", "miss")
+        rows.append(
+            f'<tr><td class="teams">{html.escape(leg["teams"][0])} <span class="vs">vs</span> '
+            f'{html.escape(leg["teams"][1])}</td><td>{SLIP_MARKET_LABELS[leg["market"]]}</td>'
+            f'<td>{html.escape(leg["selection"])}</td><td>{leg["price"]:.2f}</td>'
+            f'<td>{leg["score"] * 100:.0f}%</td><td class="{cls}">{res}</td></tr>'
+        )
+    if slip["won"] is None:
+        outcome = f'pending &middot; pays {_naira(slip["stake"] * slip["odds"])} if all {len(slip["legs"])} win'
+    elif slip["won"]:
+        outcome = f'<span class="hit">WON {_naira(slip["returned"])}</span>'
+    else:
+        outcome = (f'<span class="miss">LOST {_naira(slip["stake"])}</span> '
+                   f'({slip["legs_won"]}/{len(slip["legs"])} picks won)')
+    name = slip["name"].replace(" top ", " &middot; top ")
+    for code, label in SLIP_MARKET_LABELS.items():
+        if name.startswith(code + " "):
+            name = label + name[len(code):]
+    return (f'<div class="slip"><div class="slip-head"><strong>{name}</strong> '
+            f'<span class="conf">odds {slip["odds"]:,.2f} &middot; stake {_naira(slip["stake"])} &middot; </span>'
+            f'{outcome}</div><div class="table-scroll"><table><thead><tr><th>Game</th><th>Market</th>'
+            f'<th>Pick</th><th>Odds</th><th>Chance</th><th></th></tr></thead>'
+            f'<tbody>{"".join(rows)}</tbody></table></div></div>')
+
+
+def _render_betslips_section(conn):
+    """Paper accumulators, ₦500 each -- see track/betslips.py."""
+    built = build_slips(load_rounds(conn))
+    if not built:
+        return '<p class="empty">No rounds yet.</p>'
+
+    summary = summarize(built)
+    order = [k for k in summary if k != "All-games slip"] + (["All-games slip"] if "All-games slip" in summary else [])
+    rows, tot = [], {"slips": 0, "won": 0, "staked": 0.0, "returned": 0.0}
+    for kind in order:
+        t = summary[kind]
+        for k in tot:
+            tot[k] += t[k]
+        label = kind
+        for code, lab in SLIP_MARKET_LABELS.items():
+            if kind.startswith(code + " "):
+                label = lab + kind[len(code):]
+        rows.append((label, t))
+    rows.append(("Total", dict(tot, profit=tot["returned"] - tot["staked"], biggest_win=None)))
+    body = "".join(
+        f'<tr><td>{"<strong>Total</strong>" if label == "Total" else html.escape(label)}</td>'
+        f'<td>{t["slips"]}</td><td>{t["won"]} ({t["won"] / t["slips"] * 100:.1f}%)</td>'
+        f'<td>{_naira(t["staked"])}</td><td>{_naira(t["returned"])}</td>'
+        f'<td class="{"hit" if t["profit"] > 0 else "miss"}">{fmt_naira(t["profit"])}</td>'
+        f'<td>{_naira(t["biggest_win"]) if t.get("biggest_win") else "&mdash;"}</td></tr>'
+        for label, t in rows if t["slips"]
+    )
+    table = ('<div class="table-scroll"><table><thead><tr><th>Slip</th><th>Slips</th><th>Won</th>'
+             '<th>Staked</th><th>Returned</th><th>Profit</th><th>Biggest win</th></tr></thead>'
+             f'<tbody>{body}</tbody></table></div>')
+
+    trend, running = [], 0.0
+    for entry in built:
+        settled = [s for s in entry["slips"] if s["settled"]]
+        if not settled:
+            continue
+        profit = sum(s["returned"] - s["stake"] for s in settled)
+        running += profit
+        trend.append({"index": len(trend), "label": entry["round"]["label"], "bets": len(settled),
+                      "profit": profit, "cumulative": running})
+    chart = cumulative_profit_chart(trend, fmt=fmt_naira, unit="", bet_word="slips")
+
+    upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
+    settled_rounds = [e for e in built if e["round"]["status"] == "settled" and e["slips"]]
+    parts = [table, f"<h3>Running total since the first round ({len(trend)} rounds)</h3>", chart]
+    if upcoming:
+        e = upcoming[-1]
+        parts.append(f'<h3>This round\'s slips &mdash; {html.escape(e["round"]["label"])}</h3>')
+        parts.extend(_render_slip(s) for s in e["slips"])
+    if settled_rounds:
+        e = settled_rounds[-1]
+        result = sum(s["returned"] - s["stake"] for s in e["slips"])
+        parts.append(f'<h3>Last settled round &mdash; {html.escape(e["round"]["label"])} '
+                     f'({fmt_naira(result)})</h3>')
+        parts.extend(_render_slip(s) for s in e["slips"])
+    return "".join(parts)
 
 
 def _render_market_tiles(stats):
@@ -393,8 +491,12 @@ td.hit {{ color: var(--good); }}
 td.miss {{ color: var(--bad); }}
 .model-pred {{ margin-bottom: 2px; }}
 tr.round-total td {{ border-top: 2px solid var(--axis); font-variant-numeric: tabular-nums; }}
+.slip {{ border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 10px 0; background: var(--page); }}
+.slip-head {{ margin-bottom: 6px; font-size: 0.9rem; }}
 .model-pred.hit {{ color: var(--good); }}
 .model-pred.miss {{ color: var(--bad); }}
+.slip-head .hit {{ color: var(--good); font-weight: 600; }}
+.slip-head .miss {{ color: var(--bad); font-weight: 600; }}
 .model-pred-actual {{ color: var(--text-secondary); font-size: 0.78rem; margin-bottom: 3px; }}
 .model-tag {{ display: inline-block; min-width: 32px; color: var(--text-muted); font-size: 0.72rem;
   font-weight: 600; text-transform: uppercase; }}
@@ -457,6 +559,18 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 <section>
   <h2>Accuracy by market: each live model vs baseline vs odds-implied</h2>
   {model_accuracy_html}
+</section>
+
+<section>
+  <h2>Paper betslips: ₦{stake_naira} per slip, every round</h2>
+  <p class="section-note">Simulated accumulators -- no real bets are placed. Every round gets one
+  slip per market (the 5 games with the strongest pick in that market) plus one slip with every
+  game's single strongest pick across all six markets. "Chance" = the combined estimate used to pick:
+  the average of the model, Bet9ja's margin-free odds, and how often similar past picks won (learned
+  only from earlier rounds). A slip pays stake &times; all odds multiplied, and only if every pick
+  wins. Back-tested over every round since tracking began, so the totals include history from before
+  this section existed.</p>
+  {betslips_html}
 </section>
 
 <section>
@@ -576,6 +690,8 @@ def build_dashboard(conn, out_path=OUT_PATH):
         profit_html=_render_profit_section(conn, sorted(models_and_stats)),
         probability_html=_render_probability_section(conn, sorted(models_and_stats)),
         health_html=_render_health_section(get_health(conn)),
+        betslips_html=_render_betslips_section(conn),
+        stake_naira=STAKE_NAIRA,
         profit_trend_html=cumulative_profit_chart(get_profit_trend(conn, season_ids)),
     )
 

@@ -138,10 +138,19 @@ def accuracy_trend_chart(trend, width=680, height=220):
     return "".join(svg)
 
 
-def cumulative_profit_chart(trend, width=680, height=240):
-    """Running flat-stake profit (units) across rounds, with a zero line --
-    above zero would mean the picks are winning money overall. Each point's
-    tooltip carries that single round's own profit."""
+def _fmt_units(v, precise=False):
+    return f"{v:+.2f}" if precise else f"{v:+.0f}"
+
+
+def fmt_naira(v, precise=False):
+    return f"{'-' if v < 0 else '+'}₦{abs(v):,.0f}"
+
+
+def cumulative_profit_chart(trend, width=680, height=240, fmt=_fmt_units, unit=" units", bet_word="bets"):
+    """Running profit across rounds, with a zero line -- above zero would
+    mean the picks are winning money overall. Each point's tooltip carries
+    that single round's own profit. fmt/unit switch between flat-stake
+    units and naira (fmt_naira, unit="")."""
     if len(trend) < 2:
         return (f'<p class="empty">Only {len(trend)} round(s) with priced, reconciled picks so far.</p>')
 
@@ -169,7 +178,7 @@ def cumulative_profit_chart(trend, width=680, height=240):
         y = y_of(v)
         svg.append(f'<line x1="{margin_left}" y1="{y:.1f}" x2="{width - margin_right}" y2="{y:.1f}" class="gridline" />')
         svg.append(f'<text x="{margin_left - 8}" y="{y:.1f}" class="axis-label" text-anchor="end" '
-                   f'dominant-baseline="middle">{v:+.0f}</text>')
+                   f'dominant-baseline="middle">{html.escape(fmt(v))}</text>')
     y0 = y_of(0)
     svg.append(f'<line x1="{margin_left}" y1="{y0:.1f}" x2="{width - margin_right}" y2="{y0:.1f}" class="axis-line" />')
 
@@ -178,11 +187,11 @@ def cumulative_profit_chart(trend, width=680, height=240):
     svg.append(f'<path d="{path}" fill="none" stroke="var(--series-1)" stroke-width="2" />')
     for p, (x, y) in zip(trend, points):
         svg.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="var(--series-1)">'
-                   f'<title>{html.escape(p["label"])}: this round {p["profit"]:+.2f} units on {p["bets"]} bets; '
-                   f'running total {p["cumulative"]:+.1f}</title></circle>')
+                   f'<title>{html.escape(p["label"])}: this round {html.escape(fmt(p["profit"], True))}{unit} on '
+                   f'{p["bets"]} {bet_word}; running total {html.escape(fmt(p["cumulative"], True))}{unit}</title></circle>')
 
     last_x, last_y = points[-1]
     svg.append(f'<text x="{last_x:.1f}" y="{last_y - 10:.1f}" class="bar-label" text-anchor="end">'
-               f'{trend[-1]["cumulative"]:+.1f} units</text>')
+               f'{html.escape(fmt(trend[-1]["cumulative"], True))}{unit}</text>')
     svg.append('</svg>')
     return "".join(svg)
