@@ -90,6 +90,8 @@ def _render_probability_section(conn, models):
             f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
+SLIP_BROWSER_ROUNDS = 30
+
 SLIP_MARKET_LABELS = {"1X2": "1X2", "OU1.5": "O/U 1.5", "HT_OU0.5": "HT O/U 0.5", "BTTS": "BTTS",
                       "HT_OU1.5": "HT O/U 1.5", "OU2.5": "O/U 2.5"}
 
@@ -171,20 +173,34 @@ def _render_betslips_section(conn):
                       "profit": profit, "cumulative": running})
     chart = cumulative_profit_chart(trend, fmt=fmt_naira, unit="", bet_word="slips")
 
-    upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
-    settled_rounds = [e for e in built if e["round"]["status"] == "settled" and e["slips"]]
-    parts = [table, f"<h3>Running total since the first round ({len(trend)} rounds)</h3>", chart]
-    if upcoming:
-        e = upcoming[-1]
-        parts.append(f'<h3>This round\'s slips &mdash; {html.escape(e["round"]["label"])}</h3>')
-        parts.extend(_render_slip(s) for s in e["slips"])
-    if settled_rounds:
-        e = settled_rounds[-1]
-        result = sum(s["returned"] - s["stake"] for s in e["slips"])
-        parts.append(f'<h3>Last settled round &mdash; {html.escape(e["round"]["label"])} '
-                     f'({fmt_naira(result)})</h3>')
-        parts.extend(_render_slip(s) for s in e["slips"])
-    return "".join(parts)
+    # Slip browser: the last SLIP_BROWSER_ROUNDS settled rounds + the
+    # upcoming one (default view), each with every slip, stepped with </>.
+    shown = [e for e in built if e["slips"] and e["round"]["status"] == "settled"][-SLIP_BROWSER_ROUNDS:]
+    shown += [e for e in built if e["slips"] and e["round"]["status"] == "upcoming"]
+    panels = []
+    for i, e in enumerate(shown):
+        if e["round"]["status"] == "upcoming":
+            stake = sum(s["stake"] for s in e["slips"])
+            label = f'{e["round"]["label"]} · {len(e["slips"])} slips, {_naira(stake)} staked'
+        else:
+            result = sum(s["returned"] - s["stake"] for s in e["slips"])
+            won = sum(1 for s in e["slips"] if s["won"])
+            label = (f'{e["round"]["label"]} · {won}/{len(e["slips"])} slips won · '
+                     f'round result {fmt_naira(result)}')
+        active = " active" if i == len(shown) - 1 else ""
+        panels.append(f'<div class="slip-panel{active}" data-label="{html.escape(label)}">'
+                      + "".join(_render_slip(s) for s in e["slips"]) + "</div>")
+    nav = ""
+    if panels:
+        nav = ('<div class="round-nav">'
+               '<button id="slip-prev" type="button" aria-label="Previous round">&larr;</button>'
+               f'<span id="slip-nav-label" class="section-note"></span>'
+               '<button id="slip-next" type="button" aria-label="Next round">&rarr;</button></div>')
+    return "".join([
+        table, f"<h3>Running total since the first round ({len(trend)} rounds)</h3>", chart,
+        f"<h3>Every slip, round by round (last {SLIP_BROWSER_ROUNDS} rounds + this round)</h3>",
+        nav, *panels,
+    ])
 
 
 def _render_market_tiles(stats):
@@ -510,6 +526,9 @@ tr.round-total td {{ border-top: 2px solid var(--axis); font-variant-numeric: ta
 #round-nav-label {{ margin: 0; font-weight: 500; }}
 .round-panel {{ display: none; }}
 .round-panel.active {{ display: block; }}
+#slip-nav-label {{ margin: 0; font-weight: 500; }}
+.slip-panel {{ display: none; }}
+.slip-panel.active {{ display: block; }}
 section h3 {{ font-size: 0.9rem; margin: 16px 0 8px; color: var(--text-secondary); }}
 section h3:first-of-type {{ margin-top: 0; }}
 .chart {{ width: 100%; height: auto; }}
@@ -642,11 +661,11 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
     localStorage.setItem('zoom-dashboard-theme', next);
   }});
 }})();
-(function() {{
-  var panels = Array.prototype.slice.call(document.querySelectorAll('.round-panel'));
-  var label = document.getElementById('round-nav-label');
-  var prevBtn = document.getElementById('round-prev');
-  var nextBtn = document.getElementById('round-next');
+function wireBrowser(panelSel, labelId, prevId, nextId) {{
+  var panels = Array.prototype.slice.call(document.querySelectorAll(panelSel));
+  var label = document.getElementById(labelId);
+  var prevBtn = document.getElementById(prevId);
+  var nextBtn = document.getElementById(nextId);
   if (!panels.length || !prevBtn) return;
 
   var idx = panels.length - 1;
@@ -661,7 +680,9 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
   prevBtn.addEventListener('click', function() {{ if (idx > 0) {{ idx--; render(); }} }});
   nextBtn.addEventListener('click', function() {{ if (idx < panels.length - 1) {{ idx++; render(); }} }});
   render();
-}})();
+}}
+wireBrowser('.round-panel', 'round-nav-label', 'round-prev', 'round-next');
+wireBrowser('.slip-panel', 'slip-nav-label', 'slip-prev', 'slip-next');
 </script>
 </body>
 </html>
