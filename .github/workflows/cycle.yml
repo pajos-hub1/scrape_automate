@@ -83,10 +83,14 @@ jobs:
       - name: Run full cycle (scrape -> features -> predict -> track -> dashboard)
         env:
           GH_TOKEN: ${{ github.token }}   # dashboard/health.py reads recent run outcomes
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          set -o pipefail
           for attempt in 1 2 3; do
-            echo "=== Attempt $attempt/3 ==="
-            if python run.py cycle; then
+            echo "=== Attempt $attempt/3 ===" | tee -a cycle.log
+            # cycle.log feeds the failure alert below.
+            if python run.py cycle 2>&1 | tee -a cycle.log; then
               exit 0
             fi
             echo "Attempt $attempt failed."
@@ -158,6 +162,21 @@ jobs:
           done
           echo "::error::All 3 push attempts failed -- this run's data was NOT saved."
           exit 1
+
+      - name: Alert on Telegram if this run failed
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] || exit 0
+          tail_log=$(tail -n 25 cycle.log 2>/dev/null || echo "(no cycle log -- failed before or after the cycle step, e.g. the push)")
+          text=$(printf '⚠️ Zoom cycle FAILED\n%s\n\nLast log lines:\n%s' "$RUN_URL" "$tail_log" | head -c 3800)
+          python3 -c 'import json,sys; print(json.dumps({"chat_id": sys.argv[1], "text": sys.argv[2], "disable_web_page_preview": True}))' \
+            "$TELEGRAM_CHAT_ID" "$text" > /tmp/tg.json
+          curl -s -o /dev/null -w "Telegram HTTP %{http_code}\n" -X POST -H "Content-Type: application/json" \
+            --data @/tmp/tg.json "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" || true
 
       - name: Trigger next cycle
         # always(): a failed cycle must not break the chain -- the next

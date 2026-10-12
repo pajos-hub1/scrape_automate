@@ -24,6 +24,7 @@ from scraper.driver import build_driver
 from scraper.fingerprint import compute_fingerprint
 from scraper.fixtures_scraper import scrape_fixtures_odds
 from scraper.results_scraper import scrape_live_round, scrape_results
+from track.notify import notify
 from track.reconcile import reconcile
 from track.report import print_report
 from dashboard.build import build_dashboard
@@ -250,9 +251,17 @@ def cmd_pack(args):
     print(f"=== Packed {DB_PATH.name} -> {gz.name} ({gz.stat().st_size / 1048576:.1f} MB) ===")
 
 
+def cmd_notify(args):
+    with get_connection() as conn:
+        summary = notify(conn)
+    print("=== Telegram ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
 def cmd_cycle(args):
     """The full loop: scrape -> features -> predict -> track -> archive ->
-    dashboard -> pack. What the scheduled GitHub Actions run calls."""
+    dashboard -> notify -> pack. What the GitHub Actions run calls."""
     cmd_scrape(args)
     print()
     cmd_features(args)
@@ -264,6 +273,8 @@ def cmd_cycle(args):
     cmd_archive(args)
     print()
     cmd_dashboard(args)
+    print()
+    cmd_notify(args)
     print()
     cmd_pack(args)
 
@@ -296,6 +307,9 @@ def main():
     archive_p.add_argument("--force", action="store_true", help="Archive even if under the size trigger")
     archive_p.add_argument("--merge", action="store_true", help="Merge all archive files into one now")
     archive_p.set_defaults(func=cmd_archive)
+
+    notify_p = sub.add_parser("notify", help="Send pending Telegram messages (needs TELEGRAM_* env)")
+    notify_p.set_defaults(func=cmd_notify)
 
     pack_p = sub.add_parser("pack", help="Gzip data/zoom.db -> data/zoom.db.gz for committing")
     pack_p.set_defaults(func=cmd_pack)

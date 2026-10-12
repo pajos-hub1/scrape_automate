@@ -166,6 +166,13 @@ CREATE TABLE IF NOT EXISTS prediction_results (
     reconciled_at         TEXT NOT NULL,
     UNIQUE (prediction_id)
 );
+
+-- Telegram messages already sent (track/notify.py), so each round's slips
+-- and result go out exactly once across 15-minute cycles.
+CREATE TABLE IF NOT EXISTS notifications (
+    key       TEXT PRIMARY KEY,
+    sent_at   TEXT NOT NULL
+);
 """
 
 
