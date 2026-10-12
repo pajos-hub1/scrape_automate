@@ -181,7 +181,7 @@ def _render_betslips_section(conn):
     for i, e in enumerate(shown):
         if e["round"]["status"] == "upcoming":
             stake = sum(s["stake"] for s in e["slips"])
-            label = f'{e["round"]["label"]} · {len(e["slips"])} slips, {_naira(stake)} staked'
+            label = f'{e["round"]["label"]} (upcoming) · {len(e["slips"])} slips, {_naira(stake)} staked'
         else:
             result = sum(s["returned"] - s["stake"] for s in e["slips"])
             won = sum(1 for s in e["slips"] if s["won"])

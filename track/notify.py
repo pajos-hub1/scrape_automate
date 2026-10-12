@@ -46,7 +46,7 @@ def _slip_title(slip):
 
 def format_upcoming(entry):
     slips = entry["slips"]
-    lines = [f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips</b>",
+    lines = [f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
              f"₦{slips[0]['stake']:,} each · {_naira(sum(s['stake'] for s in slips))} total", ""]
     for slip in slips:
         lines.append(f"<b>{html.escape(_slip_title(slip))}</b>: odds {slip['odds']:,.2f} → pays "
@@ -54,7 +54,7 @@ def format_upcoming(entry):
         for leg in slip["legs"]:
             a, b = leg["teams"]
             lines.append(f"  • {html.escape(a)} v {html.escape(b)}: "
-                         f"{MARKET_NAMES[leg['market']]} <b>{html.escape(leg['selection'])}</b> @{leg['price']:.2f}")
+                         f"<b>{html.escape(pick_label(leg['market'], leg['selection']))}</b> @{leg['price']:.2f}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -76,11 +76,23 @@ def format_result(entry, running_total):
     return "\n".join(lines)
 
 
+def pick_label(market, selection):
+    """Short, readable pick: "Over 1.5", "HT Under 0.5", "1X2 Home", "BTTS No"."""
+    if market.startswith("HT_OU"):
+        return f"HT {selection} {market[5:]}"
+    if market.startswith("OU"):
+        return f"{selection} {market[2:]}"
+    return f"{market} {selection}"
+
+
 def _upcoming_key(entry):
     # The live batch is re-polled every cycle (its scraped_at moves), so key
-    # on the round label + the actual pairings instead.
+    # on the round number + the actual pairings instead. Deliberately NOT
+    # the display label: that format changed (2026-10-12) and keying on it
+    # would re-send an already-sent round.
     pairings = sorted(leg["teams"] for slip in entry["slips"] for leg in slip["legs"])
-    digest = hashlib.sha1(json.dumps([entry["round"]["label"], pairings]).encode()).hexdigest()[:16]
+    legacy_label = f"Round {entry['round']['number']} (upcoming)"
+    digest = hashlib.sha1(json.dumps([legacy_label, pairings]).encode()).hexdigest()[:16]
     return f"slips:{digest}"
 
 

@@ -14,13 +14,14 @@ def _slip(name, legs_won, n, won, price=1.3):
             "won": won, "returned": 500 * odds if won else 0.0, "legs_won": legs_won}
 
 
-def _entry(status, slips, key=(29, 6), label="S29 R6"):
-    return {"round": {"status": status, "key": key, "label": label}, "slips": slips}
+def _entry(status, slips, key=(29, 6), label="S29 R6", number=6):
+    return {"round": {"status": status, "key": key, "label": label, "number": number}, "slips": slips}
 
 
 def test_formats_contain_the_essentials():
     up = format_upcoming(_entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], label="Round 8 (upcoming)"))
-    assert "Round 8" in up and "Over/Under 1.5 top 5" in up and "A0 v B0" in up and "@1.30" in up
+    assert "Round 8" in up and "Over/Under 1.5 top 5" in up and "A0 v B0" in up
+    assert "Over 1.5</b> @1.30" in up
     res = format_result(_entry("settled", [_slip("OU1.5 top 5", 5, 5, True), _slip("BTTS top 5", 3, 5, False)]), -1234)
     assert "1/2 slips won" in res and "won ₦1,856" in res and "(3/5 picks)" in res and "−₦1,234" in res
 
@@ -38,7 +39,7 @@ def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
         assert r["sent"][0] == "hello" and len(r["sent"]) == 3 and len(outbox) == 3
         assert notify(conn, sender=outbox.append)["sent"] == []     # nothing new -> nothing sent
 
-        built.append(_entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 8 (upcoming)"))
+        built.append(_entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 8 (upcoming)", number=8))
         def broken(text):
             raise OSError("network down")
         r = notify(conn, sender=broken)
@@ -69,3 +70,21 @@ def test_real_slips_format(env):
         built = build_slips(load_rounds(conn))
     assert built and built[-1]["slips"]
     assert "slips won" in format_result(built[-1], 0)
+
+
+def test_pick_labels():
+    from track.notify import pick_label
+    assert pick_label("OU1.5", "Over") == "Over 1.5"
+    assert pick_label("OU2.5", "Under") == "Under 2.5"
+    assert pick_label("HT_OU0.5", "Over") == "HT Over 0.5"
+    assert pick_label("HT_OU1.5", "Under") == "HT Under 1.5"
+    assert pick_label("1X2", "Home") == "1X2 Home"
+    assert pick_label("BTTS", "No") == "BTTS No"
+
+
+def test_upcoming_key_ignores_display_label():
+    from track.notify import _upcoming_key
+    slips = [_slip("OU1.5 top 5", 0, 5, None)]
+    old = _upcoming_key(_entry("upcoming", slips, key=None, label="Round 14 (upcoming)", number=14))
+    new = _upcoming_key(_entry("upcoming", slips, key=None, label="S29 R14", number=14))
+    assert old == new

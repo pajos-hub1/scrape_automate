@@ -108,7 +108,7 @@ def load_rounds(conn, model_version=MODEL_VERSION):
 
     # Upcoming: the latest batch of fixtures with live, unreconciled predictions.
     latest = conn.execute(
-        """SELECT f.scraped_at, f.round_number FROM predictions p
+        """SELECT f.scraped_at, f.round_number, f.season_id FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
            WHERE pr.result_id IS NULL AND p.model_version = ?
@@ -116,7 +116,10 @@ def load_rounds(conn, model_version=MODEL_VERSION):
         (model_version,),
     ).fetchone()
     if latest:
-        upcoming = {"key": None, "label": f"Round {latest['round_number']} (upcoming)",
+        n, season = latest["round_number"], latest["season_id"]
+        # season_id is unset across a season boundary (see run.py cmd_scrape).
+        label = f"S{season} R{n}" if season is not None else f"New season R{n}"
+        upcoming = {"key": None, "number": n, "label": label,
                     "status": "upcoming", "sort": latest["scraped_at"], "games": {}}
         for f in conn.execute(
             "SELECT fixture_id, team_a, team_b FROM fixtures WHERE scraped_at = ? ORDER BY match_number",
