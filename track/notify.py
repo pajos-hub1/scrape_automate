@@ -138,6 +138,18 @@ def _chunks(text):
     return parts
 
 
+def _describe_error(e):
+    detail = type(e).__name__
+    code = getattr(e, "code", None)
+    if code is not None:
+        detail += f" {code}"
+    try:
+        detail += f" ({json.load(e)['description']})"   # HTTPError body from Telegram
+    except Exception:  # noqa: BLE001
+        pass
+    return detail
+
+
 def notify(conn, sender=send_telegram):
     """Send every pending message; record each one only after it's sent."""
     if sender is send_telegram and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
@@ -147,8 +159,9 @@ def notify(conn, sender=send_telegram):
         try:
             sender(text)
         except Exception as e:  # noqa: BLE001 -- must never fail the cycle
-            # Never echo the request URL: it contains the bot token.
-            failed.append(f"{key}: {type(e).__name__}")
+            # Never echo the request URL: it contains the bot token. Telegram's
+            # own error description (e.g. "Bad Request: chat not found") is safe.
+            failed.append(f"{key}: {_describe_error(e)}")
             continue
         conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)", (key, now_iso()))
         conn.commit()
