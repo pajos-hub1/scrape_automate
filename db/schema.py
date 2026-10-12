@@ -173,6 +173,15 @@ CREATE TABLE IF NOT EXISTS notifications (
     key       TEXT PRIMARY KEY,
     sent_at   TEXT NOT NULL
 );
+
+-- Outcome of the most recent notify attempt (one row), so a failing or
+-- unconfigured Telegram setup can be diagnosed from the committed DB
+-- without access to the Actions logs. Never contains the token.
+CREATE TABLE IF NOT EXISTS notify_status (
+    id        INTEGER PRIMARY KEY CHECK (id = 1),
+    at        TEXT NOT NULL,
+    summary   TEXT NOT NULL
+);
 """
 
 

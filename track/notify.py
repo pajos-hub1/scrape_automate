@@ -151,9 +151,20 @@ def _describe_error(e):
 
 
 def notify(conn, sender=send_telegram):
-    """Send every pending message; record each one only after it's sent."""
-    if sender is send_telegram and not (os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID")):
-        return {"skipped": "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set"}
+    """Send every pending message; record each one only after it's sent.
+    The outcome is also saved to notify_status for diagnosis."""
+    result = _notify(conn, sender)
+    conn.execute("INSERT OR REPLACE INTO notify_status (id, at, summary) VALUES (1, ?, ?)",
+                 (now_iso(), json.dumps(result)))
+    conn.commit()
+    return result
+
+
+def _notify(conn, sender):
+    if sender is send_telegram:
+        missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID") if not os.environ.get(k)]
+        if missing:
+            return {"skipped": f"not set: {', '.join(missing)}"}
     sent, failed = [], []
     for key, text in pending_messages(conn):
         try:
