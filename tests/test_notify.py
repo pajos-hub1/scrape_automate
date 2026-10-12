@@ -88,3 +88,41 @@ def test_upcoming_key_ignores_display_label():
     old = _upcoming_key(_entry("upcoming", slips, key=None, label="Round 14 (upcoming)", number=14))
     new = _upcoming_key(_entry("upcoming", slips, key=None, label="S29 R14", number=14))
     assert old == new
+
+
+def _upcoming(price, number=14):
+    e = _entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None, price=price)], key=None,
+               label=f"S29 R{number}", number=number)
+    e["round"]["games"] = {i: {"teams": (f"A{i}", f"B{i}")} for i in range(10)}
+    return e
+
+
+def _run(env, monkeypatch, built, outbox):
+    monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
+    monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
+    with get_connection(env[0]) as conn:
+        return notify(conn, sender=outbox.append)
+
+
+def test_unchanged_slips_not_resent_changed_slips_sent_as_update(env, monkeypatch):
+    outbox, built = [], [_upcoming(1.30)]
+    assert len(_run(env, monkeypatch, built, outbox)["sent"]) == 2          # hello + slips
+    assert _run(env, monkeypatch, built, outbox)["sent"] == []             # same content: silent
+    built[0] = _upcoming(1.25)                                             # same round, picks changed
+    assert len(_run(env, monkeypatch, built, outbox)["sent"]) == 1
+    assert "Updated" in outbox[-1]
+    assert _run(env, monkeypatch, built, outbox)["sent"] == []             # and only once
+    built[0] = _upcoming(1.30, number=15)                                  # a new round: normal message
+    _run(env, monkeypatch, built, outbox)
+    assert "Updated" not in outbox[-1] and "S29 R15" in outbox[-1]
+
+
+def test_round_sent_under_legacy_key_is_not_resent(env, monkeypatch):
+    from track.notify import _legacy_upcoming_key
+    entry = _upcoming(1.30)
+    with get_connection(env[0]) as conn:
+        for k in ("hello", _legacy_upcoming_key(entry)):
+            conn.execute("INSERT INTO notifications (key, sent_at) VALUES (?, 'x')", (k,))
+    outbox = []
+    r = _run(env, monkeypatch, [entry], outbox)
+    assert outbox == [] and len(r["sent"]) == 1      # recorded silently under the new key

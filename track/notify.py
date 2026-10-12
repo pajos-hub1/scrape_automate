@@ -44,9 +44,11 @@ def _slip_title(slip):
     return name.replace("-game", "-game slip")
 
 
-def format_upcoming(entry):
+def format_upcoming(entry, updated=False):
     slips = entry["slips"]
-    lines = [f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
+    head = (f"🔄 <b>Updated: {html.escape(entry['round']['label'])} slips changed</b> (results since the "
+            f"last message shifted the picks; these replace the earlier ones)\n" if updated else "")
+    lines = [head + f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
              f"₦{slips[0]['stake']:,} each · {_naira(sum(s['stake'] for s in slips))} total", ""]
     for slip in slips:
         lines.append(f"<b>{html.escape(_slip_title(slip))}</b>: odds {slip['odds']:,.2f} → pays "
@@ -85,19 +87,44 @@ def pick_label(market, selection):
     return f"{market} {selection}"
 
 
+def _sha(obj, n):
+    return hashlib.sha1(json.dumps(obj).encode()).hexdigest()[:n]
+
+
+def _round_id(entry):
+    """Which round this is: its number + every game in it. Independent of
+    the picks, so it stays the same when the slips' content changes."""
+    games = entry["round"].get("games")
+    teams = ([list(g["teams"]) for g in games.values()] if games
+             else [list(leg["teams"]) for slip in entry["slips"] for leg in slip["legs"]])
+    return _sha([entry["round"]["number"], sorted(set(map(tuple, teams)))], 10)
+
+
+def _content_id(entry):
+    """Which version of the slips: every pick and price. Changes when, e.g.,
+    a round settling shifts the history scores and reorders the top 5."""
+    return _sha([[s["name"], [[list(l["teams"]), l["market"], l["selection"], l["price"]] for l in s["legs"]]]
+                 for s in entry["slips"]], 10)
+
+
 def _upcoming_key(entry):
-    # The live batch is re-polled every cycle (its scraped_at moves), so key
-    # on the round number + the actual pairings instead. Deliberately NOT
-    # the display label: that format changed (2026-10-12) and keying on it
-    # would re-send an already-sent round.
+    return f"slips:{_round_id(entry)}:{_content_id(entry)}"
+
+
+def _legacy_upcoming_key(entry):
+    # Key format used before 2026-10-12 15:00 UTC. Only consulted so a round
+    # already sent under it isn't re-sent after the switch.
     pairings = sorted(leg["teams"] for slip in entry["slips"] for leg in slip["legs"])
     legacy_label = f"Round {entry['round']['number']} (upcoming)"
-    digest = hashlib.sha1(json.dumps([legacy_label, pairings]).encode()).hexdigest()[:16]
-    return f"slips:{digest}"
+    return "slips:" + hashlib.sha1(json.dumps([legacy_label, pairings]).encode()).hexdigest()[:16]
 
 
 def pending_messages(conn, built=None):
-    """[(key, text)] not yet sent, oldest first."""
+    """[(key, text)] not yet sent, oldest first. text=None means "record the
+    key without sending" (a round already sent under the legacy key).
+
+    Upcoming slips are re-sent -- marked as updated -- only when their
+    content differs from every version already sent for that round."""
     built = built if built is not None else build_slips(load_rounds(conn))
     sent = {r["key"] for r in conn.execute("SELECT key FROM notifications")}
     out = []
@@ -116,9 +143,17 @@ def pending_messages(conn, built=None):
 
     upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
     if upcoming:
-        key = _upcoming_key(upcoming[-1])
-        if key not in sent:
-            out.append((key, format_upcoming(upcoming[-1])))
+        entry = upcoming[-1]
+        key = _upcoming_key(entry)
+        round_prefix = f"slips:{_round_id(entry)}:"
+        if key in sent:
+            pass                                                   # this exact version already went out
+        elif any(k.startswith(round_prefix) for k in sent):
+            out.append((key, format_upcoming(entry, updated=True)))  # same round, picks changed
+        elif _legacy_upcoming_key(entry) in sent:
+            out.append((key, None))                                # sent before the key format changed
+        else:
+            out.append((key, format_upcoming(entry)))
     return out
 
 
@@ -180,7 +215,8 @@ def _notify(conn, sender):
     sent, failed = [], []
     for key, text in pending_messages(conn):
         try:
-            sender(text)
+            if text is not None:
+                sender(text)
         except Exception as e:  # noqa: BLE001 -- must never fail the cycle
             # Never echo the request URL: it contains the bot token. Telegram's
             # own error description (e.g. "Bad Request: chat not found") is safe.
