@@ -22,8 +22,11 @@ def test_formats_contain_the_essentials():
     up = format_upcoming(_entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], label="Round 8 (upcoming)"))
     assert "Round 8" in up and "Over/Under 1.5 top 5" in up and "A0 v B0" in up
     assert "Over 1.5</b> @1.30" in up
-    res = format_result(_entry("settled", [_slip("OU1.5 top 5", 5, 5, True), _slip("BTTS top 5", 3, 5, False)]), -1234)
-    assert "1/2 slips won" in res and "won ₦1,856" in res and "(3/5 picks)" in res and "−₦1,234" in res
+    e = _entry("settled", [_slip("OU1.5 top 5", 5, 5, True), _slip("BTTS top 5", 3, 5, False)])
+    e["round"]["season"] = 29
+    res = format_result(e, {"rounds": 6, "profit": -1234})
+    assert "1/2 slips won" in res and "won ₦1,856" in res and "(3/5 picks)" in res
+    assert "Season 29 so far (6 rounds, from ₦0)" in res and "−₦1,234" in res
 
 
 def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
@@ -36,7 +39,8 @@ def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
     outbox = []
     with get_connection(db_path) as conn:
         r = notify(conn, sender=outbox.append)
-        assert r["sent"][0] == "hello" and len(r["sent"]) == 3 and len(outbox) == 3
+        assert r["sent"][0] == "hello" and len(outbox) == len(r["sent"])
+        assert {"hello", "result:29-6"} <= set(r["sent"])
         assert notify(conn, sender=outbox.append)["sent"] == []     # nothing new -> nothing sent
 
         built.append(_entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 8 (upcoming)", number=8))
@@ -69,7 +73,7 @@ def test_real_slips_format(env):
         from track.betslips import load_rounds
         built = build_slips(load_rounds(conn))
     assert built and built[-1]["slips"]
-    assert "slips won" in format_result(built[-1], 0)
+    assert "slips won" in format_result(built[-1])
 
 
 def test_pick_labels():
@@ -126,3 +130,48 @@ def test_round_sent_under_legacy_key_is_not_resent(env, monkeypatch):
     outbox = []
     r = _run(env, monkeypatch, [entry], outbox)
     assert outbox == [] and len(r["sent"]) == 1      # recorded silently under the new key
+
+
+_clock = iter(range(10_000))
+
+
+def _settled(season, rnd, profit_won):
+    e = _entry("settled", [_slip("OU1.5 top 5", 5 if profit_won else 4, 5, profit_won)],
+               key=(season, rnd), label=f"S{season} R{rnd}", number=rnd)
+    e["round"]["season"] = season
+    e["round"]["sort"] = f"{next(_clock):06d}"       # chronological, like real rounds
+    return e
+
+
+def test_season_totals_restart_from_zero():
+    from track.betslips import season_totals
+    built = [_settled(28, 37, False), _settled(28, 38, True), _settled(29, 1, False), _settled(29, 2, False)]
+    t = season_totals(built)
+    assert t[28]["rounds"] == 2 and t[28]["complete"]
+    assert t[29]["rounds"] == 2 and not t[29]["complete"]
+    assert t[29]["profit"] == -1000                      # S29 counts only its own slips
+    assert t[28]["profit"] == -500 + (500 * 1.3 ** 5 - 500)
+
+
+def test_season_summary_sent_once_for_season_that_just_ended(env, monkeypatch):
+    # Ids out of time order, like the real S28 (older) / S27 (newer).
+    built = [_settled(28, 38, False), _settled(27, 38, True), _settled(29, 1, False)]
+    outbox = []
+    r = _run(env, monkeypatch, built, outbox)
+    assert "season:27" in r["sent"] and "season:28" not in r["sent"]   # the one just played, by time
+    summary = next(t for t in outbox if "Season 27 finished" in t)
+    assert "next season starts again from ₦0" in summary
+    assert "season:27" not in _run(env, monkeypatch, built, outbox)["sent"]
+
+
+def test_no_summary_for_seasons_that_ended_long_ago(env, monkeypatch):
+    built = [_settled(27, 38, True)] + [_settled(29, r, False) for r in range(1, 10)]
+    r = _run(env, monkeypatch, built, [])
+    assert not any(k.startswith("season:") for k in r["sent"])
+
+
+def test_season_order_follows_time_not_id():
+    from track.betslips import season_totals
+    t = season_totals([_settled(28, 38, False), _settled(27, 37, True), _settled(29, 1, False)])
+    assert list(t) == [28, 27, 29]
+    assert t[27]["complete"] and not t[29]["complete"]

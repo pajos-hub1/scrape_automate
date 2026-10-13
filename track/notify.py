@@ -21,9 +21,11 @@ import os
 import urllib.request
 
 from db.upsert import now_iso
-from track.betslips import build_slips, load_rounds
+from config import ROUNDS_PER_SEASON
+from track.betslips import build_slips, load_rounds, season_totals, summarize
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
+NEW_SEASON_WINDOW = 3   # a new season this young means the previous one just ended
 
 MARKET_NAMES = {"1X2": "1X2", "OU1.5": "Over/Under 1.5", "HT_OU0.5": "HT Over/Under 0.5",
                 "BTTS": "BTTS", "HT_OU1.5": "HT Over/Under 1.5", "OU2.5": "Over/Under 2.5"}
@@ -61,7 +63,7 @@ def format_upcoming(entry, updated=False):
     return "\n".join(lines).strip()
 
 
-def format_result(entry, running_total):
+def format_result(entry, season_total=None):
     slips = entry["slips"]
     won = [s for s in slips if s["won"]]
     result = sum(s["returned"] - s["stake"] for s in slips)
@@ -74,7 +76,25 @@ def format_result(entry, running_total):
         else:
             lines.append(f"❌ {html.escape(_slip_title(slip))} ({slip['legs_won']}/{len(slip['legs'])} picks) "
                          f"−{_naira(slip['stake'])}")
-    lines += ["", f"Running total, all rounds: <b>{_naira(running_total, sign=True)}</b>"]
+    if season_total is not None:
+        season = entry["round"].get("season")
+        lines += ["", f"Season {season} so far ({season_total['rounds']} rounds, from ₦0): "
+                      f"<b>{_naira(season_total['profit'], sign=True)}</b>"]
+    return "\n".join(lines)
+
+
+def format_season_summary(season, totals, by_type):
+    """End-of-season report: that season's own money, starting from ₦0."""
+    icon = "🏆" if totals["profit"] > 0 else "📉"
+    lines = [f"{icon} <b>Season {season} finished: {_naira(totals['profit'], sign=True)}</b>",
+             f"{totals['rounds']} rounds · {totals['won']}/{totals['slips']} slips won",
+             f"Staked {_naira(totals['staked'])} · returned {_naira(totals['returned'])}", "",
+             "<b>By slip type</b>"]
+    for kind, t in sorted(by_type.items(), key=lambda kv: kv[1]["profit"], reverse=True):
+        title = _slip_title({"name": kind}) if kind != "All-games slip" else "10-game slip"
+        lines.append(f"{'✅' if t['profit'] > 0 else '❌'} {html.escape(title)}: {t['won']}/{t['slips']} won, "
+                     f"{_naira(t['profit'], sign=True)}")
+    lines += ["", "The next season starts again from ₦0."]
     return "\n".join(lines)
 
 
@@ -138,8 +158,25 @@ def pending_messages(conn, built=None):
         last = settled[-1]
         key = f"result:{last['round']['key'][0]}-{last['round']['key'][1]}"
         if key not in sent:
-            running = sum(s["returned"] - s["stake"] for e in settled for s in e["slips"])
-            out.append((key, format_result(last, running)))
+            totals = season_totals(built).get(last["round"].get("season"))
+            out.append((key, format_result(last, totals)))
+
+    # Season summary, sent once, only when a season ends NOW: the current
+    # season reaching its last round, or a new season's first rounds coming
+    # in (then summarise the one just before it). Never an old season --
+    # so switching this on doesn't announce seasons that ended long ago.
+    seasons = season_totals(built)          # in the order played
+    order = list(seasons)
+    finished_now = None
+    if order and seasons[order[-1]]["last_round"] >= ROUNDS_PER_SEASON:
+        finished_now = order[-1]
+    elif len(order) >= 2 and seasons[order[-1]]["rounds"] <= NEW_SEASON_WINDOW:
+        finished_now = order[-2]
+    if finished_now is not None:
+        key = f"season:{finished_now}"
+        if key not in sent:
+            out.append((key, format_season_summary(finished_now, seasons[finished_now],
+                                                   summarize(built, season=finished_now))))
 
     upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
     if upcoming:

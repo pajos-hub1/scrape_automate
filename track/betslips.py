@@ -24,6 +24,7 @@ identical to having recorded the slips before kickoff.
 import json
 from collections import defaultdict
 
+from config import ROUNDS_PER_SEASON
 from track.reconcile import actual_labels
 from track.report import _ensure_closing_prices
 
@@ -94,7 +95,7 @@ def load_rounds(conn, model_version=MODEL_VERSION):
             continue
         key = (m["season_id"], m["round_number"])
         rnd = rounds.setdefault(key, {
-            "key": key, "label": f"S{key[0]} R{key[1]}", "status": "settled",
+            "key": key, "season": key[0], "label": f"S{key[0]} R{key[1]}", "status": "settled",
             "sort": m["scraped_at"], "games": {},
         })
         rnd["sort"] = min(rnd["sort"], m["scraped_at"])
@@ -119,7 +120,7 @@ def load_rounds(conn, model_version=MODEL_VERSION):
         n, season = latest["round_number"], latest["season_id"]
         # season_id is unset across a season boundary (see run.py cmd_scrape).
         label = f"S{season} R{n}" if season is not None else f"New season R{n}"
-        upcoming = {"key": None, "number": n, "label": label,
+        upcoming = {"key": None, "season": season, "number": n, "label": label,
                     "status": "upcoming", "sort": latest["scraped_at"], "games": {}}
         for f in conn.execute(
             "SELECT fixture_id, team_a, team_b FROM fixtures WHERE scraped_at = ? ORDER BY match_number",
@@ -215,12 +216,15 @@ def _slip(name, legs):
     }
 
 
-def summarize(built):
-    """{slip type: totals} over settled slips. Slip type = name without the
-    game count, so '10-game' and '9-game' slips pool together."""
+def summarize(built, season=None):
+    """{slip type: totals} over settled slips -- all seasons, or just one
+    (each season's money starts from ₦0). Slip type = name without the game
+    count, so '10-game' and '9-game' slips pool together."""
     totals = defaultdict(lambda: {"slips": 0, "won": 0, "staked": 0.0, "returned": 0.0,
                                   "biggest_win": 0.0, "longest_losing": 0, "_streak": 0})
     for entry in built:
+        if season is not None and entry["round"].get("season") != season:
+            continue
         for slip in entry["slips"]:
             if not slip["settled"]:
                 continue
@@ -240,3 +244,40 @@ def summarize(built):
         t.pop("_streak")
         t["profit"] = t["returned"] - t["staked"]
     return dict(totals)
+
+
+def season_totals(built):
+    """{season: totals} in the order the seasons were PLAYED (oldest first),
+    each starting from ₦0: rounds, slips, won, staked, returned, profit,
+    last_round, and whether the season is complete (round 38 settled, or a
+    later season is being played).
+
+    Season ids are NOT chronological: when tracking resumed on 2026-10-10
+    the site showed two seasons at once, so the older one got the higher
+    id (S28 was played before S27). Order comes from `built`, which is
+    sorted by when each round's results appeared."""
+    out = {}
+    for entry in built:
+        rnd = entry["round"]
+        if rnd["status"] != "settled" or not entry["slips"] or rnd.get("season") is None:
+            continue
+        t = out.setdefault(rnd["season"], {"rounds": 0, "slips": 0, "won": 0, "staked": 0.0,
+                                            "returned": 0.0, "last_round": 0, "_last_seen": ""})
+        t["rounds"] += 1
+        t["_last_seen"] = max(t["_last_seen"], rnd.get("sort") or "")
+        t["last_round"] = max(t["last_round"], rnd["key"][1])
+        for slip in entry["slips"]:
+            t["slips"] += 1
+            t["won"] += int(bool(slip["won"]))
+            t["staked"] += slip["stake"]
+            t["returned"] += slip["returned"]
+    order = sorted(out, key=lambda s: out[s]["_last_seen"])
+    current = order[-1] if order else None
+    ordered = {}
+    for season in order:
+        t = out[season]
+        t.pop("_last_seen")
+        t["profit"] = t["returned"] - t["staked"]
+        t["complete"] = season != current or t["last_round"] >= ROUNDS_PER_SEASON
+        ordered[season] = t
+    return ordered

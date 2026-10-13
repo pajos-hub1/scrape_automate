@@ -10,7 +10,7 @@ from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, fmt_
 from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_profit_trend,
                             get_recent_season_ids, get_round_history)
 from dashboard.health import get_health
-from track.betslips import STAKE_NAIRA, build_slips, load_rounds, summarize
+from track.betslips import STAKE_NAIRA, build_slips, load_rounds, season_totals, summarize
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -137,7 +137,17 @@ def _render_betslips_section(conn):
     if not built:
         return '<p class="empty">No rounds yet.</p>'
 
-    summary = summarize(built)
+    # Money is tracked per season, each starting from ₦0.
+    seasons = season_totals(built)
+    # Current = the season played most recently (ids aren't chronological --
+    # see season_totals), or a brand-new season with no results yet.
+    upcoming_season = next((e["round"].get("season") for e in reversed(built)
+                            if e["round"]["status"] == "upcoming"), None)
+    current = next(reversed(seasons), None)
+    if upcoming_season is not None and upcoming_season not in seasons:
+        current = upcoming_season
+
+    summary = summarize(built, season=current)
     order = [k for k in summary if k != "All-games slip"] + (["All-games slip"] if "All-games slip" in summary else [])
     rows, tot = [], {"slips": 0, "won": 0, "staked": 0.0, "returned": 0.0}
     for kind in order:
@@ -158,12 +168,42 @@ def _render_betslips_section(conn):
         f'<td>{_naira(t["biggest_win"]) if t.get("biggest_win") else "&mdash;"}</td></tr>'
         for label, t in rows if t["slips"]
     )
-    table = ('<div class="table-scroll"><table><thead><tr><th>Slip</th><th>Slips</th><th>Won</th>'
-             '<th>Staked</th><th>Returned</th><th>Profit</th><th>Biggest win</th></tr></thead>'
-             f'<tbody>{body}</tbody></table></div>')
+    if not tot["slips"]:
+        table = (f'<p class="empty">Season {current} has just started: ₦0 so far. Its first results '
+                 f'appear here once round 1 finishes.</p>')
+    else:
+        table = ('<div class="table-scroll"><table><thead><tr><th>Slip</th><th>Slips</th><th>Won</th>'
+                 '<th>Staked</th><th>Returned</th><th>Profit</th><th>Biggest win</th></tr></thead>'
+                 f'<tbody>{body}</tbody></table></div>')
+
+    season_rows = []
+    for season in reversed(seasons):           # most recently played first
+        t = seasons[season]
+        status = "finished" if t["complete"] else f"in progress (round {t['last_round']})"
+        season_rows.append(
+            f'<tr><td>Season {season}</td><td>{status}</td><td>{t["rounds"]}</td>'
+            f'<td>{t["won"]}/{t["slips"]}</td><td>{_naira(t["staked"])}</td><td>{_naira(t["returned"])}</td>'
+            f'<td class="{"hit" if t["profit"] > 0 else "miss"}">{fmt_naira(t["profit"])}</td></tr>')
+    if seasons:
+        all_staked = sum(t["staked"] for t in seasons.values())
+        all_ret = sum(t["returned"] for t in seasons.values())
+        won_seasons = sum(1 for t in seasons.values() if t["complete"] and t["profit"] > 0)
+        done = sum(1 for t in seasons.values() if t["complete"])
+        season_rows.append(
+            f'<tr class="round-total"><td><strong>All seasons</strong></td>'
+            f'<td>{won_seasons}/{done} finished seasons in profit</td>'
+            f'<td>{sum(t["rounds"] for t in seasons.values())}</td>'
+            f'<td>{sum(t["won"] for t in seasons.values())}/{sum(t["slips"] for t in seasons.values())}</td>'
+            f'<td>{_naira(all_staked)}</td><td>{_naira(all_ret)}</td>'
+            f'<td class="{"hit" if all_ret > all_staked else "miss"}">{fmt_naira(all_ret - all_staked)}</td></tr>')
+    season_table = ('<div class="table-scroll"><table><thead><tr><th>Season</th><th>Status</th><th>Rounds</th>'
+                    '<th>Slips won</th><th>Staked</th><th>Returned</th><th>Profit</th></tr></thead>'
+                    f'<tbody>{"".join(season_rows)}</tbody></table></div>')
 
     trend, running = [], 0.0
     for entry in built:
+        if entry["round"].get("season") != current:
+            continue
         settled = [s for s in entry["slips"] if s["settled"]]
         if not settled:
             continue
@@ -197,7 +237,9 @@ def _render_betslips_section(conn):
                f'<span id="slip-nav-label" class="section-note"></span>'
                '<button id="slip-next" type="button" aria-label="Next round">&rarr;</button></div>')
     return "".join([
-        table, f"<h3>Running total since the first round ({len(trend)} rounds)</h3>", chart,
+        f"<h3>Season {current}: by slip type (started from ₦0)</h3>", table,
+        f"<h3>Season {current}: running total, round by round</h3>", chart,
+        "<h3>Season by season (each starts from ₦0)</h3>", season_table,
         f"<h3>Every slip, round by round (last {SLIP_BROWSER_ROUNDS} rounds + this round)</h3>",
         nav, *panels,
     ])
