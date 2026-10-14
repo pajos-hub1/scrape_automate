@@ -175,3 +175,45 @@ def test_season_order_follows_time_not_id():
     t = season_totals([_settled(28, 38, False), _settled(27, 37, True), _settled(29, 1, False)])
     assert list(t) == [28, 27, 29]
     assert t[27]["complete"] and not t[29]["complete"]
+
+
+def test_two_chats_each_get_every_message_once(env, monkeypatch):
+    built = [_settled(29, 5, True), _upcoming(1.30, number=6)]
+    sent_to = []
+    sender = lambda text, chat_id: sent_to.append(chat_id)
+    r = _run_chats(env, monkeypatch, built, sender, ["111", "222"])
+    assert sent_to.count("111") == sent_to.count("222") == 3          # hello, result, slips each
+    assert _run_chats(env, monkeypatch, built, sender, ["111", "222"])["sent"] == []
+    with get_connection(env[0]) as conn:
+        keys = [k for (k,) in conn.execute("SELECT key FROM notifications")]
+    assert not any("222" in k or "111" in k for k in keys)              # ids never stored
+
+
+def test_adding_second_chat_does_not_resend_to_first(env, monkeypatch):
+    built = [_settled(29, 5, True), _upcoming(1.30, number=6)]
+    sent_to = []
+    sender = lambda text, chat_id: sent_to.append(chat_id)
+    _run_chats(env, monkeypatch, built, sender, ["111"])
+    sent_to.clear()
+    _run_chats(env, monkeypatch, built, sender, ["111", "222"])
+    assert sent_to == ["222", "222", "222"]                             # only the new chat catches up
+
+
+def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
+    built = [_settled(29, 5, True)]
+    got = []
+    def sender(text, chat_id):
+        if chat_id == "bad":
+            raise OSError("down")
+        got.append(chat_id)
+    r = _run_chats(env, monkeypatch, built, sender, ["111", "bad"])
+    assert got == ["111", "111"] and len(r["failed"]) == 2
+    r = _run_chats(env, monkeypatch, built, lambda text, chat_id: got.append(chat_id), ["111", "bad"])
+    assert got[-2:] == ["bad", "bad"]                                   # retried for the failed chat only
+
+
+def _run_chats(env, monkeypatch, built, sender, chats):
+    monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
+    monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
+    with get_connection(env[0]) as conn:
+        return notify(conn, sender=sender, chats=chats)

@@ -139,14 +139,31 @@ def _legacy_upcoming_key(entry):
     return "slips:" + hashlib.sha1(json.dumps([legacy_label, pairings]).encode()).hexdigest()[:16]
 
 
-def pending_messages(conn, built=None):
+def chat_ids():
+    """TELEGRAM_CHAT_ID may hold several chats, comma-separated. The first
+    is the owner's: it also gets the workflow's failure alerts."""
+    return [c.strip() for c in os.environ.get("TELEGRAM_CHAT_ID", "").split(",") if c.strip()]
+
+
+def _chat_suffix(index, chat):
+    # The first chat keeps the original, unsuffixed keys (so nothing already
+    # sent to it is re-sent). Others get "@<hash>": the DB is committed to a
+    # public repo, so the chat id itself is never stored.
+    return "" if index == 0 else "@" + hashlib.sha1(str(chat).encode()).hexdigest()[:8]
+
+
+def pending_messages(conn, built=None, suffix=""):
     """[(key, text)] not yet sent, oldest first. text=None means "record the
     key without sending" (a round already sent under the legacy key).
 
     Upcoming slips are re-sent -- marked as updated -- only when their
     content differs from every version already sent for that round."""
     built = built if built is not None else build_slips(load_rounds(conn))
-    sent = {r["key"] for r in conn.execute("SELECT key FROM notifications")}
+    rows = [r["key"] for r in conn.execute("SELECT key FROM notifications")]
+    if suffix:
+        sent = {k[: -len(suffix)] for k in rows if k.endswith(suffix)}
+    else:
+        sent = {k for k in rows if "@" not in k}
     out = []
     if "hello" not in sent:
         out.append(("hello", "👋 <b>NewFiti connected.</b> You'll get each round's paper betslips "
@@ -234,32 +251,39 @@ def _describe_error(e):
     return detail
 
 
-def notify(conn, sender=send_telegram):
+def notify(conn, sender=send_telegram, chats=None):
     """Send every pending message; record each one only after it's sent.
     The outcome is also saved to notify_status for diagnosis."""
-    result = _notify(conn, sender)
+    result = _notify(conn, sender, chats)
     conn.execute("INSERT OR REPLACE INTO notify_status (id, at, summary) VALUES (1, ?, ?)",
                  (now_iso(), json.dumps(result)))
     conn.commit()
     return result
 
 
-def _notify(conn, sender):
+def _notify(conn, sender, chats):
     if sender is send_telegram:
         missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID") if not os.environ.get(k)]
         if missing:
             return {"skipped": f"not set: {', '.join(missing)}"}
+    if chats is None:
+        chats = chat_ids() if sender is send_telegram else [None]
+    built = build_slips(load_rounds(conn))
     sent, failed = [], []
-    for key, text in pending_messages(conn):
-        try:
-            if text is not None:
-                sender(text)
-        except Exception as e:  # noqa: BLE001 -- must never fail the cycle
-            # Never echo the request URL: it contains the bot token. Telegram's
-            # own error description (e.g. "Bad Request: chat not found") is safe.
-            failed.append(f"{key}: {_describe_error(e)}")
-            continue
-        conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)", (key, now_iso()))
-        conn.commit()
-        sent.append(key)
+    for index, chat in enumerate(chats):
+        suffix = _chat_suffix(index, chat)
+        label = f"chat{index + 1}"
+        for key, text in pending_messages(conn, built, suffix=suffix):
+            try:
+                if text is not None:
+                    sender(text) if chat is None else sender(text, chat_id=chat)
+            except Exception as e:  # noqa: BLE001 -- must never fail the cycle
+                # Never echo the request URL: it contains the bot token. Telegram's
+                # own error description (e.g. "Bad Request: chat not found") is safe.
+                failed.append(f"{label} {key}: {_describe_error(e)}")
+                continue
+            conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)",
+                         (key + suffix, now_iso()))
+            conn.commit()
+            sent.append(key if len(chats) == 1 else f"{label} {key}")
     return {"sent": sent, "failed": failed}
