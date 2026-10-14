@@ -290,38 +290,51 @@ def _notify(conn, sender, chats):
             sent.append(key if len(chats) == 1 else f"{label} {key}")
 
     result = {"sent": sent, "failed": failed}
-    if failures:
-        owner_failed = any(index == 0 for index, *_ in failures)
-        result["owner_failed"] = owner_failed
-        if not owner_failed:
-            # Tell the owner (chat 1) -- once per distinct problem, not every
-            # 15-minute retry of the same undelivered messages.
-            alert_key = "failalert:" + hashlib.sha1(
-                json.dumps(sorted((lbl, k) for _, lbl, k, _ in failures)).encode()).hexdigest()[:12]
-            already = conn.execute("SELECT 1 FROM notifications WHERE key = ?", (alert_key,)).fetchone()
-            if not already:
-                try:
-                    text = format_delivery_alert(failures)
-                    sender(text) if chats[0] is None else sender(text, chat_id=chats[0])
-                    conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)",
-                                 (alert_key, now_iso()))
-                    conn.commit()
-                    result["alerted_owner"] = True
-                except Exception as e:  # noqa: BLE001
-                    result["owner_failed"] = True
-                    failed.append(f"owner alert: {_describe_error(e)}")
+    owner = (lambda text: sender(text)) if chats[0] is None else (lambda text: sender(text, chat_id=chats[0]))
+    since = conn.execute("SELECT sent_at FROM notifications WHERE key = ?", (FAIL_SINCE_KEY,)).fetchone()
+    other_failures = [f for f in failures if f[0] != 0]
+    if failures and any(index == 0 for index, *_ in failures):
+        result["owner_failed"] = True
+    elif other_failures:
+        # Remind the owner on EVERY run while another chat is still not
+        # getting its messages (requested: keep seeing it until it's fixed).
+        if since is None:
+            conn.execute("INSERT INTO notifications (key, sent_at) VALUES (?, ?)", (FAIL_SINCE_KEY, now_iso()))
+            conn.commit()
+            since = (now_iso(),)
+        try:
+            owner(format_delivery_alert(other_failures, since[0]))
+            result["alerted_owner"] = True
+        except Exception as e:  # noqa: BLE001
+            result["owner_failed"] = True
+            failed.append(f"owner alert: {_describe_error(e)}")
+    elif since is not None:
+        # Everything delivered again: say so once, then stop reminding.
+        try:
+            owner(f"✅ <b>Telegram delivery fixed</b>: every chat is receiving messages again "
+                  f"(had been failing since {since[0][11:16]} UTC).")
+            conn.execute("DELETE FROM notifications WHERE key = ?", (FAIL_SINCE_KEY,))
+            conn.commit()
+            result["recovered"] = True
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"owner recovery note: {_describe_error(e)}")
     return result
 
 
-def format_delivery_alert(failures):
+FAIL_SINCE_KEY = "deliveryfail:since"
+
+
+def format_delivery_alert(failures, since=None):
     by_chat = {}
     for _, label, key, reason in failures:
         by_chat.setdefault(label.replace("chat", "chat "), []).append((key, reason))
-    lines = ["⚠️ <b>Telegram: some messages couldn't be delivered</b>", ""]
+    when = f" (failing since {since[11:16]} UTC)" if since else ""
+    lines = [f"⚠️ <b>Telegram: some messages couldn't be delivered</b>{when}", ""]
     for chat, items in by_chat.items():
         reasons = sorted({r for _, r in items})
         lines.append(f"<b>{html.escape(chat)}</b>: {len(items)} message(s) not delivered "
                      f"({html.escape('; '.join(reasons))})")
-    lines += ["", "They'll be retried every run. Common causes: that person blocked or never started the "
-                  "bot, or their chat ID in TELEGRAM_CHAT_ID is wrong."]
+    lines += ["", "Retried every run -- you'll get this reminder each run (~15 min) until it's fixed. "
+                  "Common causes: that person blocked or never started the bot, or their chat ID in "
+                  "TELEGRAM_CHAT_ID is wrong."]
     return "\n".join(lines)

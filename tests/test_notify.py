@@ -209,7 +209,7 @@ def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
     r = _run_chats(env, monkeypatch, built, sender, ["111", "bad"])
     assert got == ["111", "111", "111"] and len(r["failed"]) == 2      # hello, result + delivery alert
     r = _run_chats(env, monkeypatch, built, lambda text, chat_id: got.append(chat_id), ["111", "bad"])
-    assert got[-2:] == ["bad", "bad"]                                   # retried for the failed chat only
+    assert got[-3:] == ["bad", "bad", "111"]       # retried for the failed chat, then "fixed" note to owner
 
 
 def _run_chats(env, monkeypatch, built, sender, chats):
@@ -219,20 +219,23 @@ def _run_chats(env, monkeypatch, built, sender, chats):
         return notify(conn, sender=sender, chats=chats)
 
 
-def test_owner_alerted_once_when_another_chat_fails(env, monkeypatch):
+def test_owner_reminded_every_run_until_fixed(env, monkeypatch):
     built = [_settled(29, 5, True)]
-    got = []
+    got, broken = [], {"friend"}
     def sender(text, chat_id):
-        if chat_id == "friend":
+        if chat_id in broken:
             raise OSError("blocked")
         got.append((chat_id, text))
+    alerts = lambda: [t for c, t in got if c == "me" and "couldn't be delivered" in t]
+    for _ in range(3):                                                  # three runs, still broken
+        r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])
+        assert r.get("alerted_owner") and not r.get("owner_failed")
+    assert len(alerts()) == 3 and "chat 2" in alerts()[0] and "failing since" in alerts()[-1]
+    broken.clear()                                                      # fixed
     r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])
-    assert r.get("alerted_owner") and not r.get("owner_failed")
-    alerts = [t for c, t in got if "couldn't be delivered" in t]
-    assert len(alerts) == 1 and got[-1][0] == "me" and "chat 2" in alerts[0]
-    r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])  # same problem next run
-    assert not r.get("alerted_owner")
-    assert sum("couldn't be delivered" in t for _, t in got) == 1      # no repeat alert
+    assert r.get("recovered") and any("delivery fixed" in t for c, t in got if c == "me")
+    r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])  # quiet afterwards
+    assert not r.get("alerted_owner") and not r.get("recovered") and len(alerts()) == 3
 
 
 def test_owner_chat_failing_is_flagged(env, monkeypatch):
