@@ -235,13 +235,15 @@ def _render_betslips_section(conn):
     # Slip browser: the last SLIP_BROWSER_ROUNDS settled rounds + the
     # upcoming one (default view), each with every slip, stepped with </>.
     shown = [e for e in built if e["slips"] and e["round"]["status"] == "settled"][-SLIP_BROWSER_ROUNDS:]
+    shown += [e for e in built if e["slips"] and e["round"]["status"] == "playing"]
     shown += [e for e in built if e["slips"] and e["round"]["status"] == "upcoming"]
     panels = []
     for i, e in enumerate(shown):
-        if e["round"]["status"] == "upcoming":
+        if e["round"]["status"] in ("upcoming", "playing"):
             staked_slips = played(e["slips"])
             stake = sum(s["stake"] for s in staked_slips)
-            label = f'{e["round"]["label"]} (upcoming) · {len(staked_slips)} slips, {_naira(stake)} staked'
+            state = "in play, results pending" if e["round"]["status"] == "playing" else "upcoming"
+            label = f'{e["round"]["label"]} ({state}) · {len(staked_slips)} slips, {_naira(stake)} staked'
         else:
             staked_slips = played(e["slips"])
             result = sum(s["returned"] - s["stake"] for s in staked_slips)

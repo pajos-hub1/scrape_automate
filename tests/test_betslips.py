@@ -60,3 +60,17 @@ def test_upcoming_round_is_pending_and_excluded_from_totals():
     assert all(s["won"] is None for s in built[1]["slips"])
     totals = summarize(built)
     assert totals["OU1.5 top 5"]["slips"] == 1 and totals["OU1.5 top 5"]["won"] == 1
+
+
+def test_round_in_play_is_shown_but_not_counted_or_learned_from():
+    games = {i: _game(i, None) for i in range(10)}
+    for g in games.values():
+        for c in g["markets"]["OU1.5"]:
+            c["won"] = None
+    settled = _round("R1", {i: _game(i, True) for i in range(10)})
+    playing = _round("R2", games, "playing")
+    built = build_slips([settled, playing, _round("R3", {i: _game(i, True) for i in range(10)})])
+    assert all(s["won"] is None for s in built[1]["slips"])             # in play: unsettled
+    assert summarize(built)["OU1.5 top 5"]["slips"] == 2                 # only R1 and R3 count
+    # R3's history only learned from R1, not from the unfinished R2
+    assert built[2]["slips"][0]["legs"][0]["hist_p"] == build_slips([settled, built[2]["round"]])[1]["slips"][0]["legs"][0]["hist_p"]

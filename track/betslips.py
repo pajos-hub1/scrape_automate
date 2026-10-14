@@ -125,31 +125,47 @@ def load_rounds(conn, model_version=MODEL_VERSION):
 
     ordered = sorted(rounds.values(), key=lambda r: r["sort"])
 
-    # Upcoming: the latest batch of fixtures with live, unreconciled predictions.
-    latest = conn.execute(
-        """SELECT f.scraped_at, f.round_number, f.season_id FROM predictions p
+    # Unsettled rounds: the latest batch of fixtures with live, unreconciled
+    # predictions is the upcoming round; the batch before it -- if recent --
+    # is the round being played right now (predicted, results not in yet).
+    batches = conn.execute(
+        """SELECT f.scraped_at, MAX(f.round_number) AS round_number, MAX(f.season_id) AS season_id
+           FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
            WHERE pr.result_id IS NULL AND p.model_version = ?
-           ORDER BY f.scraped_at DESC LIMIT 1""",
+           GROUP BY f.scraped_at ORDER BY f.scraped_at DESC LIMIT 2""",
         (model_version,),
-    ).fetchone()
-    if latest:
-        n, season = latest["round_number"], latest["season_id"]
+    ).fetchall()
+    unsettled = []
+    for i, b in enumerate(batches):
+        if i == 1 and not _recent(b["scraped_at"], hours=PLAYING_WINDOW_HOURS):
+            continue          # an old, superseded preview -- not a round in play
+        if i == 1 and b["round_number"] == batches[0]["round_number"]:
+            continue
+        n, season = b["round_number"], b["season_id"]
         # season_id is unset across a season boundary (see run.py cmd_scrape).
         label = f"S{season} R{n}" if season is not None else f"New season R{n}"
-        upcoming = {"key": None, "season": season, "number": n, "label": label,
-                    "status": "upcoming", "sort": latest["scraped_at"], "games": {}}
+        rnd = {"key": None, "season": season, "number": n, "label": label,
+               "status": "upcoming" if i == 0 else "playing", "sort": b["scraped_at"], "games": {}}
         for f in conn.execute(
             "SELECT fixture_id, team_a, team_b FROM fixtures WHERE scraped_at = ? ORDER BY match_number",
-            (latest["scraped_at"],),
+            (b["scraped_at"],),
         ):
             cands = _candidates(f["fixture_id"], preds, prices, None)
             if cands:
-                upcoming["games"][f"fx{f['fixture_id']}"] = {"teams": (f["team_a"], f["team_b"]), "markets": cands}
-        if upcoming["games"]:
-            ordered.append(upcoming)
-    return ordered
+                rnd["games"][f"fx{f['fixture_id']}"] = {"teams": (f["team_a"], f["team_b"]), "markets": cands}
+        if rnd["games"]:
+            unsettled.insert(0, rnd)
+    return ordered + unsettled
+
+
+PLAYING_WINDOW_HOURS = 4
+
+
+def _recent(ts, hours):
+    from datetime import datetime, timedelta, timezone
+    return datetime.fromisoformat(ts) >= datetime.now(timezone.utc) - timedelta(hours=hours)
 
 
 def _candidates(fixture_id, preds, prices, labels):
