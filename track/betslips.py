@@ -44,7 +44,14 @@ SCORE = "combined"
 # 2026-10-14 at the user's request after losing every round of S30 R1-R5
 # (all-time they won 60/491 and 32/513, both net losers). So each round
 # stakes 5 slips = ₦2,500.
-UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5"}
+# 2026-10-14 (later): the all-games ("10-game") slip dropped too -> 4 slips,
+# ₦2,000 a round.
+UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5", "All-games slip"}
+
+
+def slip_kind(name):
+    """Slip type: '10-game' / '9-game' slips pool as 'All-games slip'."""
+    return "All-games slip" if name.endswith("-game") else name
 
 
 def played(slips):
@@ -220,7 +227,7 @@ def _slip(name, legs):
     settled = all(leg["won"] is not None for leg in legs)
     won = settled and all(leg["won"] for leg in legs)
     return {
-        "name": name, "legs": legs, "odds": odds, "stake": STAKE_NAIRA, "played": name not in UNPLAYED,
+        "name": name, "legs": legs, "odds": odds, "stake": STAKE_NAIRA, "played": slip_kind(name) not in UNPLAYED,
         "settled": settled, "won": won if settled else None,
         "returned": STAKE_NAIRA * odds if won else 0.0,
         "legs_won": sum(1 for leg in legs if leg["won"]),

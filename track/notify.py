@@ -22,7 +22,8 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
-from track.betslips import build_slips, load_rounds, played, season_totals, summarize
+from track.betslips import (MARKETS, STAKE_NAIRA, UNPLAYED, build_slips, load_rounds, played,
+                            season_totals, summarize)
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
 NEW_SEASON_WINDOW = 3   # a new season this young means the previous one just ended
@@ -83,13 +84,18 @@ def format_result(entry, season_total=None):
     return "\n".join(lines)
 
 
-RECALC_KEY = "recalc:drop-ht-ou1.5-and-ou2.5"
-RECALC_BEFORE = "2026-10-14T15:00:00+00:00"   # chats connected before the 2 slip types were dropped
+# One correction per version of the dropped set, so changing UNPLAYED again
+# sends a fresh, accurate correction (and never a stale one).
+RECALC_KEY = "recalc:drop-" + "-".join(sorted(k.split()[0].lower() for k in UNPLAYED))
+RECALC_BEFORE = "2026-10-14T15:20:00+00:00"   # chats connected before the latest drop
 
 
 def format_recalc(season, entries, totals):
-    lines = ["🔁 <b>Slips changed: 5 per round now (₦2,500)</b>",
-             "HT Over/Under 1.5 and Over/Under 2.5 slips are dropped -- no longer sent or counted.",
+    per_round = len(MARKETS) + 1 - len(UNPLAYED)
+    dropped = ", ".join(sorted("10-game slip" if k == "All-games slip" else _slip_title({"name": k})
+                               for k in UNPLAYED))
+    lines = [f"🔁 <b>Slips changed: {per_round} per round now ({_naira(per_round * STAKE_NAIRA)})</b>",
+             f"Dropped -- no longer sent or counted: {html.escape(dropped)}.",
              "", f"<b>Season {season} recalculated without them</b>:"]
     for e in entries:
         slips = played(e["slips"])
