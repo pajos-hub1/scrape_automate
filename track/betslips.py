@@ -39,6 +39,17 @@ MODEL_VERSION = "baseline_v0"
 # added noise. Kept as requested; switch here to compare live.
 SCORE = "combined"
 
+# Slip types still built and shown on the dashboard ("tracking only") but
+# NOT staked: left out of every ₦ total and not sent to Telegram. Dropped
+# 2026-10-14 at the user's request after losing every round of S30 R1-R5
+# (all-time they won 60/491 and 32/513, both net losers). So each round
+# stakes 5 slips = ₦2,500.
+UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5"}
+
+
+def played(slips):
+    return [s for s in slips if s["played"]]
+
 
 def _bucket(p):
     return min(int(p * 20), 19)
@@ -209,14 +220,14 @@ def _slip(name, legs):
     settled = all(leg["won"] is not None for leg in legs)
     won = settled and all(leg["won"] for leg in legs)
     return {
-        "name": name, "legs": legs, "odds": odds, "stake": STAKE_NAIRA,
+        "name": name, "legs": legs, "odds": odds, "stake": STAKE_NAIRA, "played": name not in UNPLAYED,
         "settled": settled, "won": won if settled else None,
         "returned": STAKE_NAIRA * odds if won else 0.0,
         "legs_won": sum(1 for leg in legs if leg["won"]),
     }
 
 
-def summarize(built, season=None):
+def summarize(built, season=None, include_unplayed=False):
     """{slip type: totals} over settled slips -- all seasons, or just one
     (each season's money starts from ₦0). Slip type = name without the game
     count, so '10-game' and '9-game' slips pool together."""
@@ -226,7 +237,7 @@ def summarize(built, season=None):
         if season is not None and entry["round"].get("season") != season:
             continue
         for slip in entry["slips"]:
-            if not slip["settled"]:
+            if not slip["settled"] or (not slip["played"] and not include_unplayed):
                 continue
             kind = "All-games slip" if slip["name"].endswith("-game") else slip["name"]
             t = totals[kind]
@@ -266,7 +277,7 @@ def season_totals(built):
         t["rounds"] += 1
         t["_last_seen"] = max(t["_last_seen"], rnd.get("sort") or "")
         t["last_round"] = max(t["last_round"], rnd["key"][1])
-        for slip in entry["slips"]:
+        for slip in played(entry["slips"]):
             t["slips"] += 1
             t["won"] += int(bool(slip["won"]))
             t["staked"] += slip["stake"]

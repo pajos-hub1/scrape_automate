@@ -10,7 +10,7 @@ def _slip(name, legs_won, n, won, price=1.3):
     legs = [{"teams": (f"A{i}", f"B{i}"), "market": "OU1.5", "selection": "Over", "price": price,
              "won": (i < legs_won) if won is not None else None} for i in range(n)]
     odds = price ** n
-    return {"name": name, "legs": legs, "odds": odds, "stake": 500, "settled": won is not None,
+    return {"name": name, "legs": legs, "odds": odds, "stake": 500, "played": True, "settled": won is not None,
             "won": won, "returned": 500 * odds if won else 0.0, "legs_won": legs_won}
 
 
@@ -33,6 +33,7 @@ def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
     db_path, _ = env
     built = [_entry("settled", [_slip("OU1.5 top 5", 5, 5, True)]),
              _entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 7 (upcoming)")]
+    monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
 
@@ -102,6 +103,7 @@ def _upcoming(price, number=14):
 
 
 def _run(env, monkeypatch, built, outbox):
+    monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
     with get_connection(env[0]) as conn:
@@ -212,7 +214,8 @@ def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
     assert got[-3:] == ["bad", "bad", "111"]       # retried for the failed chat, then "fixed" note to owner
 
 
-def _run_chats(env, monkeypatch, built, sender, chats):
+def _run_chats(env, monkeypatch, built, sender, chats, recalc_before="2000-01-01"):
+    monkeypatch.setattr(notify_mod, "RECALC_BEFORE", recalc_before)   # tests must not depend on the clock
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
     with get_connection(env[0]) as conn:
@@ -256,3 +259,37 @@ def test_health_tile_shows_telegram_status(env):
         h.fetch_recent_runs = lambda hours=24: None
         html_out = _render_health_section(h.get_health(conn))
     assert "Telegram" in html_out and "Partly failing" in html_out
+
+
+def test_recalc_sent_once_only_to_chats_that_saw_old_slips(env, monkeypatch):
+    from track.notify import RECALC_KEY
+    built = [_settled(30, 1, True), _settled(30, 2, False)]
+    with get_connection(env[0]) as conn:          # "me" connected before the change
+        conn.execute("INSERT INTO notifications (key, sent_at) VALUES ('hello', '2026-10-12T13:57:09+00:00')")
+        for k in ("result:30-1", "result:30-2"):
+            conn.execute("INSERT INTO notifications (key, sent_at) VALUES (?, '2026-10-14T10:00:00+00:00')", (k,))
+    got = []
+    cutoff = "2026-10-13T00:00:00+00:00"
+    r = _run_chats(env, monkeypatch, built, lambda text, chat_id: got.append((chat_id, text)), ["me", "new"], cutoff)
+    recalcs = [(c, t) for c, t in got if "recalculated" in t]
+    assert [c for c, _ in recalcs] == ["me"]                     # not the brand-new chat
+    assert "S30 R1" in recalcs[0][1] and "Season 30 so far" in recalcs[0][1]
+    got.clear()
+    _run_chats(env, monkeypatch, built, lambda text, chat_id: got.append((chat_id, text)), ["me", "new"], cutoff)
+    assert not any("recalculated" in t for _, t in got)          # once only
+
+
+def test_unplayed_slips_not_sent_or_counted():
+    from track.betslips import season_totals
+    from track.notify import format_result, format_upcoming
+    dropped = _slip("OU2.5 top 5", 2, 5, False)
+    dropped["played"] = False
+    e = _settled(30, 1, True)
+    e["slips"].append(dropped)
+    t = season_totals([e])[30]
+    assert t["slips"] == 1 and t["staked"] == 500             # dropped slip not staked
+    assert "Over/Under 2.5" not in format_result(e, t)
+    up = _upcoming(1.3, number=2)
+    up["slips"].append(dict(dropped, won=None, settled=False))
+    msg = format_upcoming(up)
+    assert "Over/Under 2.5" not in msg and "₦500 total" in msg

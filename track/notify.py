@@ -22,7 +22,7 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
-from track.betslips import build_slips, load_rounds, season_totals, summarize
+from track.betslips import build_slips, load_rounds, played, season_totals, summarize
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
 NEW_SEASON_WINDOW = 3   # a new season this young means the previous one just ended
@@ -47,9 +47,9 @@ def _slip_title(slip):
 
 
 def format_upcoming(entry, updated=False):
-    slips = entry["slips"]
-    head = (f"🔄 <b>Updated: {html.escape(entry['round']['label'])} slips changed</b> (results since the "
-            f"last message shifted the picks; these replace the earlier ones)\n" if updated else "")
+    slips = played(entry["slips"])
+    head = (f"🔄 <b>Updated: {html.escape(entry['round']['label'])} slips changed</b> "
+            f"(these replace the earlier ones)\n" if updated else "")
     lines = [head + f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
              f"₦{slips[0]['stake']:,} each · {_naira(sum(s['stake'] for s in slips))} total", ""]
     for slip in slips:
@@ -64,7 +64,7 @@ def format_upcoming(entry, updated=False):
 
 
 def format_result(entry, season_total=None):
-    slips = entry["slips"]
+    slips = played(entry["slips"])
     won = [s for s in slips if s["won"]]
     result = sum(s["returned"] - s["stake"] for s in slips)
     icon = "✅" if result > 0 else "❌"
@@ -80,6 +80,25 @@ def format_result(entry, season_total=None):
         season = entry["round"].get("season")
         lines += ["", f"Season {season} so far ({season_total['rounds']} rounds, from ₦0): "
                       f"<b>{_naira(season_total['profit'], sign=True)}</b>"]
+    return "\n".join(lines)
+
+
+RECALC_KEY = "recalc:drop-ht-ou1.5-and-ou2.5"
+RECALC_BEFORE = "2026-10-14T15:00:00+00:00"   # chats connected before the 2 slip types were dropped
+
+
+def format_recalc(season, entries, totals):
+    lines = ["🔁 <b>Slips changed: 5 per round now (₦2,500)</b>",
+             "HT Over/Under 1.5 and Over/Under 2.5 slips are dropped -- no longer sent or counted.",
+             "", f"<b>Season {season} recalculated without them</b>:"]
+    for e in entries:
+        slips = played(e["slips"])
+        won = sum(1 for s in slips if s["won"])
+        result = sum(s["returned"] - s["stake"] for s in slips)
+        lines.append(f"{'✅' if result > 0 else '❌'} {html.escape(e['round']['label'])}: {won}/{len(slips)} won, "
+                     f"{_naira(result, sign=True)}")
+    lines += ["", f"Season {season} so far ({totals['rounds']} rounds, from ₦0): "
+                  f"<b>{_naira(totals['profit'], sign=True)}</b>"]
     return "\n".join(lines)
 
 
@@ -124,7 +143,7 @@ def _content_id(entry):
     """Which version of the slips: every pick and price. Changes when, e.g.,
     a round settling shifts the history scores and reorders the top 5."""
     return _sha([[s["name"], [[list(l["teams"]), l["market"], l["selection"], l["price"]] for l in s["legs"]]]
-                 for s in entry["slips"]], 10)
+                 for s in played(entry["slips"])], 10)
 
 
 def _upcoming_key(entry):
@@ -159,7 +178,9 @@ def pending_messages(conn, built=None, suffix=""):
     Upcoming slips are re-sent -- marked as updated -- only when their
     content differs from every version already sent for that round."""
     built = built if built is not None else build_slips(load_rounds(conn))
-    rows = [r["key"] for r in conn.execute("SELECT key FROM notifications")]
+    all_rows = conn.execute("SELECT key, sent_at FROM notifications").fetchall()
+    rows = [r["key"] for r in all_rows]
+    hello_at = next((r["sent_at"] for r in all_rows if r["key"] == "hello" + suffix), None)
     if suffix:
         sent = {k[: -len(suffix)] for k in rows if k.endswith(suffix)}
     else:
@@ -194,6 +215,15 @@ def pending_messages(conn, built=None, suffix=""):
         if key not in sent:
             out.append((key, format_season_summary(finished_now, seasons[finished_now],
                                                    summarize(built, season=finished_now))))
+
+    # One-time correction after dropping the two UNPLAYED slip types: the
+    # current season's results so far, recalculated without them.
+    # Only for chats that got the old 7-slip messages (connected before the change).
+    if RECALC_KEY not in sent and hello_at and hello_at < RECALC_BEFORE and seasons:
+        current = list(seasons)[-1]
+        if not seasons[current]["complete"]:
+            out.append((RECALC_KEY, format_recalc(current, [e for e in settled if e["round"].get("season") == current],
+                                                  seasons[current])))
 
     upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
     if upcoming:
