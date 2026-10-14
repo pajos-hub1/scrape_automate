@@ -61,6 +61,16 @@ def _render_health_section(health):
                                 f"{runs['total'] - runs['failed']} ok / {runs['failed']} failed runs"))
         tiles.append(_stat_tile("Last successful run", _fmt_ts(runs["last_success"])))
         tiles.append(_stat_tile("Last failed run", _fmt_ts(runs["last_failure"])))
+    tg = health.get("telegram")
+    if tg:
+        if "skipped" in tg:
+            value, sub = "Off", tg["skipped"]
+        elif tg.get("failed"):
+            value = "Failing" if tg.get("owner_failed") else "Partly failing"
+            sub = f'{len(tg["failed"])} undelivered, retrying: ' + "; ".join(tg["failed"])[:140]
+        else:
+            value, sub = "OK", f'all delivered · last check {tg["at"][11:16]} UTC'
+        tiles.append(_stat_tile("Telegram", value, sub))
     missed = health["missed_rounds"]
     tiles.append(_stat_tile("Rounds missed (24h)", len(missed),
                             ", ".join(missed[:6]) if missed else "every round got a prediction"))

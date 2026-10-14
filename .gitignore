@@ -14,3 +14,4 @@ debug/
 data/*.db
 data/archive/*.db
 *.tmp
+telegram_owner_failed

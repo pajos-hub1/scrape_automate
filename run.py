@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from config import DB_PATH, ROUNDS_PER_SEASON
+from config import BASE_DIR, DB_PATH, ROUNDS_PER_SEASON
 from db.archive import archive_if_needed, merge_archives_if_needed
 from db.connection import get_connection
 from db.storage import pack
@@ -257,6 +257,13 @@ def cmd_notify(args):
     print("=== Telegram ===")
     for k, v in summary.items():
         print(f"  {k}: {v}")
+    # If even the owner's chat can't be reached, Telegram can't tell anyone --
+    # leave a marker so the workflow marks the run failed after saving data.
+    marker = BASE_DIR / "telegram_owner_failed"
+    if summary.get("owner_failed"):
+        marker.write_text("\n".join(summary.get("failed", [])))
+    elif marker.exists():
+        marker.unlink()
 
 
 def cmd_cycle(args):

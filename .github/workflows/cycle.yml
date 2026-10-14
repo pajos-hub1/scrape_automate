@@ -163,6 +163,16 @@ jobs:
           echo "::error::All 3 push attempts failed -- this run's data was NOT saved."
           exit 1
 
+      - name: Check Telegram reached the owner
+        # Runs after the data is saved. Undelivered messages to other chats
+        # are reported to the owner on Telegram; this catches the case where
+        # the owner's own chat can't be reached, so nothing else can tell them.
+        run: |
+          if [ -f telegram_owner_failed ]; then
+            echo "::error::Telegram messages to the owner's chat (first TELEGRAM_CHAT_ID) failed: $(cat telegram_owner_failed | tr '\n' ' ')"
+            exit 1
+          fi
+
       - name: Alert on Telegram if this run failed
         if: failure()
         env:

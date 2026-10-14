@@ -63,7 +63,10 @@ def missed_rounds_last_24h(conn):
 
 def get_health(conn):
     runs = fetch_recent_runs()
-    health = {"missed_rounds": missed_rounds_last_24h(conn), "runs": None}
+    health = {"missed_rounds": missed_rounds_last_24h(conn), "runs": None, "telegram": None}
+    row = conn.execute("SELECT at, summary FROM notify_status WHERE id = 1").fetchone()
+    if row:
+        health["telegram"] = {"at": row["at"], **json.loads(row["summary"])}
     if runs is not None:
         done = [r for r in runs if r["conclusion"] is not None]
         failed = [r for r in done if r["conclusion"] != "success"]

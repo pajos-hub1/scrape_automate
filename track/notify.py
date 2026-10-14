@@ -269,7 +269,7 @@ def _notify(conn, sender, chats):
     if chats is None:
         chats = chat_ids() if sender is send_telegram else [None]
     built = build_slips(load_rounds(conn))
-    sent, failed = [], []
+    sent, failed, failures = [], [], []
     for index, chat in enumerate(chats):
         suffix = _chat_suffix(index, chat)
         label = f"chat{index + 1}"
@@ -280,10 +280,48 @@ def _notify(conn, sender, chats):
             except Exception as e:  # noqa: BLE001 -- must never fail the cycle
                 # Never echo the request URL: it contains the bot token. Telegram's
                 # own error description (e.g. "Bad Request: chat not found") is safe.
-                failed.append(f"{label} {key}: {_describe_error(e)}")
+                reason = _describe_error(e)
+                failed.append(f"{label} {key}: {reason}")
+                failures.append((index, label, key, reason))
                 continue
             conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)",
                          (key + suffix, now_iso()))
             conn.commit()
             sent.append(key if len(chats) == 1 else f"{label} {key}")
-    return {"sent": sent, "failed": failed}
+
+    result = {"sent": sent, "failed": failed}
+    if failures:
+        owner_failed = any(index == 0 for index, *_ in failures)
+        result["owner_failed"] = owner_failed
+        if not owner_failed:
+            # Tell the owner (chat 1) -- once per distinct problem, not every
+            # 15-minute retry of the same undelivered messages.
+            alert_key = "failalert:" + hashlib.sha1(
+                json.dumps(sorted((lbl, k) for _, lbl, k, _ in failures)).encode()).hexdigest()[:12]
+            already = conn.execute("SELECT 1 FROM notifications WHERE key = ?", (alert_key,)).fetchone()
+            if not already:
+                try:
+                    text = format_delivery_alert(failures)
+                    sender(text) if chats[0] is None else sender(text, chat_id=chats[0])
+                    conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)",
+                                 (alert_key, now_iso()))
+                    conn.commit()
+                    result["alerted_owner"] = True
+                except Exception as e:  # noqa: BLE001
+                    result["owner_failed"] = True
+                    failed.append(f"owner alert: {_describe_error(e)}")
+    return result
+
+
+def format_delivery_alert(failures):
+    by_chat = {}
+    for _, label, key, reason in failures:
+        by_chat.setdefault(label.replace("chat", "chat "), []).append((key, reason))
+    lines = ["⚠️ <b>Telegram: some messages couldn't be delivered</b>", ""]
+    for chat, items in by_chat.items():
+        reasons = sorted({r for _, r in items})
+        lines.append(f"<b>{html.escape(chat)}</b>: {len(items)} message(s) not delivered "
+                     f"({html.escape('; '.join(reasons))})")
+    lines += ["", "They'll be retried every run. Common causes: that person blocked or never started the "
+                  "bot, or their chat ID in TELEGRAM_CHAT_ID is wrong."]
+    return "\n".join(lines)

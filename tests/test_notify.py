@@ -207,7 +207,7 @@ def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
             raise OSError("down")
         got.append(chat_id)
     r = _run_chats(env, monkeypatch, built, sender, ["111", "bad"])
-    assert got == ["111", "111"] and len(r["failed"]) == 2
+    assert got == ["111", "111", "111"] and len(r["failed"]) == 2      # hello, result + delivery alert
     r = _run_chats(env, monkeypatch, built, lambda text, chat_id: got.append(chat_id), ["111", "bad"])
     assert got[-2:] == ["bad", "bad"]                                   # retried for the failed chat only
 
@@ -217,3 +217,39 @@ def _run_chats(env, monkeypatch, built, sender, chats):
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
     with get_connection(env[0]) as conn:
         return notify(conn, sender=sender, chats=chats)
+
+
+def test_owner_alerted_once_when_another_chat_fails(env, monkeypatch):
+    built = [_settled(29, 5, True)]
+    got = []
+    def sender(text, chat_id):
+        if chat_id == "friend":
+            raise OSError("blocked")
+        got.append((chat_id, text))
+    r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])
+    assert r.get("alerted_owner") and not r.get("owner_failed")
+    alerts = [t for c, t in got if "couldn't be delivered" in t]
+    assert len(alerts) == 1 and got[-1][0] == "me" and "chat 2" in alerts[0]
+    r = _run_chats(env, monkeypatch, built, sender, ["me", "friend"])  # same problem next run
+    assert not r.get("alerted_owner")
+    assert sum("couldn't be delivered" in t for _, t in got) == 1      # no repeat alert
+
+
+def test_owner_chat_failing_is_flagged(env, monkeypatch):
+    def sender(text, chat_id):
+        raise OSError("down")
+    r = _run_chats(env, monkeypatch, [_settled(29, 5, True)], sender, ["me", "friend"])
+    assert r["owner_failed"] is True and not r.get("alerted_owner")
+
+
+def test_health_tile_shows_telegram_status(env):
+    from dashboard.build import _render_health_section
+    import json as _json
+    with get_connection(env[0]) as conn:
+        conn.execute("INSERT INTO notify_status (id, at, summary) VALUES (1, '2026-10-14T10:00:00+00:00', ?)",
+                     (_json.dumps({"sent": [], "failed": ["chat2 hello: OSError"]}),))
+        from dashboard.health import missed_rounds_last_24h  # noqa: F401
+        import dashboard.health as h
+        h.fetch_recent_runs = lambda hours=24: None
+        html_out = _render_health_section(h.get_health(conn))
+    assert "Telegram" in html_out and "Partly failing" in html_out
