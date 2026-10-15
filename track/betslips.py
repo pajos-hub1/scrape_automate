@@ -30,6 +30,13 @@ from track.report import _ensure_closing_prices
 
 MARKETS = ["1X2", "OU1.5", "HT_OU0.5", "BTTS", "HT_OU1.5", "OU2.5"]
 STAKE_NAIRA = 500
+# Per-slip-type stakes that differ from STAKE_NAIRA. 2026-10-15: BTTS doubled
+# to ₦1,000 when O/U 1.5 was dropped, keeping ₦2,000 a round.
+STAKES = {"BTTS top 5": 1000}
+
+
+def stake_for(kind):
+    return STAKES.get(kind, STAKE_NAIRA)
 BEST_PER_MARKET = 5
 HISTORY_PRIOR = 30
 MODEL_VERSION = "baseline_v0"
@@ -46,7 +53,20 @@ SCORE = "combined"
 # stakes 5 slips = ₦2,500.
 # 2026-10-14 (later): the all-games ("10-game") slip dropped too -> 4 slips,
 # ₦2,000 a round.
-UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5", "All-games slip"}
+# 2026-10-15: O/U 1.5 dropped too -> 3 staked slips (1X2 ₦500, HT O/U 0.5
+# ₦500, BTTS ₦1,000) = ₦2,000 a round.
+UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5", "All-games slip", "OU1.5 top 5"}
+
+
+def round_stake():
+    """₦ staked per round across the played slip types."""
+    kinds = [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip"]
+    return sum(stake_for(k) for k in kinds if k not in UNPLAYED)
+
+
+def played_kinds():
+    kinds = [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip"]
+    return [k for k in kinds if k not in UNPLAYED]
 
 
 def slip_kind(name):
@@ -243,9 +263,10 @@ def _slip(name, legs):
     settled = all(leg["won"] is not None for leg in legs)
     won = settled and all(leg["won"] for leg in legs)
     return {
-        "name": name, "legs": legs, "odds": odds, "stake": STAKE_NAIRA, "played": slip_kind(name) not in UNPLAYED,
+        "name": name, "legs": legs, "odds": odds, "stake": stake_for(slip_kind(name)),
+        "played": slip_kind(name) not in UNPLAYED,
         "settled": settled, "won": won if settled else None,
-        "returned": STAKE_NAIRA * odds if won else 0.0,
+        "returned": stake_for(slip_kind(name)) * odds if won else 0.0,
         "legs_won": sum(1 for leg in legs if leg["won"]),
     }
 

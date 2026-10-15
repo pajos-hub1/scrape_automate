@@ -10,7 +10,8 @@ from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, fmt_
 from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_profit_trend,
                             get_recent_season_ids, get_round_history)
 from dashboard.health import get_health
-from track.betslips import MARKETS, STAKE_NAIRA, UNPLAYED, build_slips, load_rounds, played, season_totals, summarize
+from track.betslips import (STAKE_NAIRA, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
+                            season_totals, stake_for, summarize)
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -646,7 +647,7 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
-  <h2>Paper betslips: ₦{stake_naira} per slip, {slips_per_round} slips (₦{round_stake}) every round</h2>
+  <h2>Paper betslips: {slips_per_round} slips, ₦{round_stake} every round ({stake_breakdown})</h2>
   <p class="section-note">Simulated accumulators -- no real bets are placed. Every round gets one
   slip per market (the 5 games with the strongest pick in that market) plus one slip with every
   game's single strongest pick across all six markets. "Chance" = the combined estimate used to pick:
@@ -778,8 +779,10 @@ def build_dashboard(conn, out_path=OUT_PATH):
         health_html=_render_health_section(get_health(conn)),
         betslips_html=_render_betslips_section(conn),
         stake_naira=STAKE_NAIRA,
-        slips_per_round=len(MARKETS) + 1 - len(UNPLAYED),
-        round_stake=f"{STAKE_NAIRA * (len(MARKETS) + 1 - len(UNPLAYED)):,}",
+        stake_breakdown=", ".join(
+            f"{SLIP_MARKET_LABELS.get(k.split()[0], k)} ₦{stake_for(k):,}" for k in played_kinds()),
+        slips_per_round=len(played_kinds()),
+        round_stake=f"{round_stake():,}",
         profit_trend_html=cumulative_profit_chart(get_profit_trend(conn, season_ids)),
     )
 

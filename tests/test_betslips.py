@@ -58,7 +58,7 @@ def test_upcoming_round_is_pending_and_excluded_from_totals():
             c["won"] = None
     built = build_slips([_round("R1", {i: _game(i, True) for i in range(10)}), _round("UP", games, "upcoming")])
     assert all(s["won"] is None for s in built[1]["slips"])
-    totals = summarize(built)
+    totals = summarize(built, include_unplayed=True)
     assert totals["OU1.5 top 5"]["slips"] == 1 and totals["OU1.5 top 5"]["won"] == 1
 
 
@@ -71,6 +71,17 @@ def test_round_in_play_is_shown_but_not_counted_or_learned_from():
     playing = _round("R2", games, "playing")
     built = build_slips([settled, playing, _round("R3", {i: _game(i, True) for i in range(10)})])
     assert all(s["won"] is None for s in built[1]["slips"])             # in play: unsettled
-    assert summarize(built)["OU1.5 top 5"]["slips"] == 2                 # only R1 and R3 count
+    assert summarize(built, include_unplayed=True)["OU1.5 top 5"]["slips"] == 2                 # only R1 and R3 count
     # R3's history only learned from R1, not from the unfinished R2
     assert built[2]["slips"][0]["legs"][0]["hist_p"] == build_slips([settled, built[2]["round"]])[1]["slips"][0]["legs"][0]["hist_p"]
+
+
+def test_stakes_per_slip_type():
+    from track.betslips import round_stake, stake_for
+    rnd = _round("R1", {i: _game(i, True, home_won=True) for i in range(10)})
+    slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
+    assert slips["1X2 top 5"]["stake"] == 500
+    assert slips["1X2 top 5"]["returned"] == pytest.approx(500 * 1.5 ** 5)
+    assert stake_for("BTTS top 5") == 1000
+    assert round_stake() == 2000                       # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000
+    assert not slips["OU1.5 top 5"]["played"]

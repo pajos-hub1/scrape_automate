@@ -22,7 +22,7 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
-from track.betslips import (MARKETS, STAKE_NAIRA, UNPLAYED, build_slips, load_rounds, played,
+from track.betslips import (STAKES, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
                             season_totals, summarize)
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
@@ -52,10 +52,10 @@ def format_upcoming(entry, updated=False):
     head = (f"🔄 <b>Updated: {html.escape(entry['round']['label'])} slips changed</b> "
             f"(these replace the earlier ones)\n" if updated else "")
     lines = [head + f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
-             f"₦{slips[0]['stake']:,} each · {_naira(sum(s['stake'] for s in slips))} total", ""]
+             f"{_naira(sum(s['stake'] for s in slips))} total", ""]
     for slip in slips:
-        lines.append(f"<b>{html.escape(_slip_title(slip))}</b>: odds {slip['odds']:,.2f} → pays "
-                     f"{_naira(slip['stake'] * slip['odds'])}")
+        lines.append(f"<b>{html.escape(_slip_title(slip))}</b> (stake {_naira(slip['stake'])}): odds "
+                     f"{slip['odds']:,.2f} → pays {_naira(slip['stake'] * slip['odds'])}")
         for leg in slip["legs"]:
             a, b = leg["teams"]
             lines.append(f"  • {html.escape(a)} v {html.escape(b)}: "
@@ -86,17 +86,20 @@ def format_result(entry, season_total=None):
 
 # One correction per version of the dropped set, so changing UNPLAYED again
 # sends a fresh, accurate correction (and never a stale one).
-RECALC_KEY = "recalc:drop-" + "-".join(sorted(k.split()[0].lower() for k in UNPLAYED))
-RECALC_BEFORE = "2026-10-14T15:20:00+00:00"   # chats connected before the latest drop
+RECALC_KEY = ("recalc:drop-" + "-".join(sorted(k.split()[0].lower() for k in UNPLAYED))
+              + "".join(f":{k.split()[0].lower()}={v}" for k, v in sorted(STAKES.items())))
+RECALC_BEFORE = "2026-10-15T00:00:00+00:00"   # chats connected before the latest change
 
 
 def format_recalc(season, entries, totals):
-    per_round = len(MARKETS) + 1 - len(UNPLAYED)
-    dropped = ", ".join(sorted("10-game slip" if k == "All-games slip" else _slip_title({"name": k})
-                               for k in UNPLAYED))
-    lines = [f"🔁 <b>Slips changed: {per_round} per round now ({_naira(per_round * STAKE_NAIRA)})</b>",
+    title = lambda k: "10-game slip" if k == "All-games slip" else _slip_title({"name": k})
+    from track.betslips import stake_for
+    staked = ", ".join(f"{title(k)} {_naira(stake_for(k))}" for k in played_kinds())
+    dropped = ", ".join(sorted(title(k) for k in UNPLAYED))
+    lines = [f"🔁 <b>Slips changed: {len(played_kinds())} per round now ({_naira(round_stake())})</b>",
+             f"Staked: {html.escape(staked)}.",
              f"Dropped -- no longer sent or counted: {html.escape(dropped)}.",
-             "", f"<b>Season {season} recalculated without them</b>:"]
+             "", f"<b>Season {season} recalculated from round 1</b>:"]
     for e in entries:
         slips = played(e["slips"])
         won = sum(1 for s in slips if s["won"])
