@@ -83,5 +83,43 @@ def test_stakes_per_slip_type():
     assert slips["1X2 top 5"]["stake"] == 500
     assert slips["1X2 top 5"]["returned"] == pytest.approx(500 * 1.5 ** 5)
     assert stake_for("BTTS top 5") == 1000
-    assert round_stake() == 2000                       # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000
+    assert round_stake() == 2500                       # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000 + Best 6 500
     assert not slips["OU1.5 top 5"]["played"]
+
+
+def _full_game(i):
+    g = _game(i, True, home_won=True)
+    # BTTS favours the LOW-numbered games, so the 3 slips don't all pick the same 5
+    g["markets"]["BTTS"] = [_cand("Yes", 1.9, True, 0.62 - i * 0.01), _cand("No", 1.9, False, 0.38 + i * 0.01)]
+    g["markets"]["HT_OU0.5"] = [_cand("Over", 1.3, True, 0.74 + i * 0.005), _cand("Under", 3.5, False, 0.26)]
+    return g
+
+
+def test_best6_takes_strongest_picks_one_per_game():
+    import track.betslips as b
+    games = {i: _full_game(i) for i in range(10)}
+    for i, g in games.items():                    # make every game's 1X2 Home a distinct strength
+        g["markets"]["1X2"][0]["model_p"] = g["markets"]["1X2"][0]["odds_p"] = 0.5 + i * 0.03
+    rnd = _round("R1", games)
+    rnd["season"] = b.BEST6_FROM_SEASON
+    slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
+    best6 = slips["Best 6"]
+    assert len(best6["legs"]) == 6
+    assert len({leg["teams"] for leg in best6["legs"]}) == 6          # one pick per game
+    pool = [leg for s in slips.values() if s["played"] and s["name"] != "Best 6"
+            and not s["name"].endswith("-game") for leg in s["legs"]]
+    strongest = {}
+    for leg in pool:
+        if leg["teams"] not in strongest or leg["score"] > strongest[leg["teams"]]["score"]:
+            strongest[leg["teams"]] = leg
+    expected = sorted(strongest.values(), key=lambda l: l["score"], reverse=True)[:6]
+    assert [l["teams"] for l in best6["legs"]] == [l["teams"] for l in expected]
+    assert best6["played"]
+
+
+def test_best6_not_staked_before_its_start_season():
+    import track.betslips as b
+    rnd = _round("R1", {i: _full_game(i) for i in range(10)})
+    rnd["season"] = b.BEST6_FROM_SEASON - 1
+    best6 = next(s for s in build_slips([rnd])[0]["slips"] if s["name"] == "Best 6")
+    assert not best6["played"]

@@ -58,15 +58,26 @@ SCORE = "combined"
 UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5", "All-games slip", "OU1.5 top 5"}
 
 
+# "Best 6": the 6 strongest picks across the played market slips (one per
+# game -- Bet9ja won't combine two picks from the same game). Added
+# 2026-10-16, staked from season BEST6_FROM_SEASON onward; built for earlier
+# rounds too, but only as tracking.
+BEST6 = "Best 6"
+BEST6_LEGS = 6
+BEST6_FROM_SEASON = 31     # the season that started 2026-10-16 20:58 UTC
+
+
+def _all_kinds():
+    return [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip", BEST6]
+
+
 def round_stake():
     """₦ staked per round across the played slip types."""
-    kinds = [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip"]
-    return sum(stake_for(k) for k in kinds if k not in UNPLAYED)
+    return sum(stake_for(k) for k in played_kinds())
 
 
 def played_kinds():
-    kinds = [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip"]
-    return [k for k in kinds if k not in UNPLAYED]
+    return [k for k in _all_kinds() if k not in UNPLAYED]
 
 
 def slip_kind(name):
@@ -244,6 +255,14 @@ def build_slips(rounds, score=SCORE):
         best_per_game = [max(g.values(), key=lambda leg: leg["score"]) for g in scored_games.values() if g]
         if len(best_per_game) >= 8:   # a full round is 10; tolerate a couple of unpriced games
             slips.append(_slip(f"{len(best_per_game)}-game", best_per_game))
+
+        best6 = _best6(slips)
+        if best6 is not None:
+            # Staked only from BEST6_FROM_SEASON on (season None = a brand-new
+            # season not yet fingerprinted, which is necessarily the newest).
+            season = rnd.get("season")
+            best6["played"] = best6["played"] and (season is None or season >= BEST6_FROM_SEASON)
+            slips.append(best6)
         out.append({"round": rnd, "slips": slips})
 
         if rnd["status"] == "settled":
@@ -254,6 +273,21 @@ def build_slips(rounds, score=SCORE):
                         h[0] += 1
                         h[1] += int(c["won"])
     return out
+
+
+def _best6(slips):
+    """The BEST6_LEGS strongest picks across the played market slips, at
+    most one per game; None if there aren't enough distinct games."""
+    per_game = {}
+    for slip in slips:
+        if not slip["played"] or slip_kind(slip["name"]) == "All-games slip":
+            continue
+        for leg in slip["legs"]:
+            cur = per_game.get(leg["teams"])
+            if cur is None or leg["score"] > cur["score"]:
+                per_game[leg["teams"]] = leg
+    legs = sorted(per_game.values(), key=lambda leg: leg["score"], reverse=True)[:BEST6_LEGS]
+    return _slip(BEST6, legs) if len(legs) == BEST6_LEGS else None
 
 
 def _slip(name, legs):
