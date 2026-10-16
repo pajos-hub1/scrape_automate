@@ -22,7 +22,7 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
-from track.betslips import (STAKES, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
+from track.betslips import (BEST6_FROM_SEASON, STAKES, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
                             season_totals, summarize)
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
@@ -87,8 +87,9 @@ def format_result(entry, season_total=None):
 # One correction per version of the dropped set, so changing UNPLAYED again
 # sends a fresh, accurate correction (and never a stale one).
 RECALC_KEY = ("recalc:drop-" + "-".join(sorted(k.split()[0].lower() for k in UNPLAYED))
-              + "".join(f":{k.split()[0].lower()}={v}" for k, v in sorted(STAKES.items())))
-RECALC_BEFORE = "2026-10-15T00:00:00+00:00"   # chats connected before the latest change
+              + "".join(f":{k.split()[0].lower()}={v}" for k, v in sorted(STAKES.items()))
+              + f":best6from{BEST6_FROM_SEASON}")
+RECALC_BEFORE = "2026-10-16T21:00:00+00:00"   # chats connected before the latest change
 
 
 def format_recalc(season, entries, totals):
