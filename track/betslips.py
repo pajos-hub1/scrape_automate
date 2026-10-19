@@ -30,14 +30,8 @@ from track.report import _ensure_closing_prices
 
 MARKETS = ["1X2", "OU1.5", "HT_OU0.5", "BTTS", "HT_OU1.5", "OU2.5"]
 STAKE_NAIRA = 500
-# Per-slip-type stakes that differ from STAKE_NAIRA. 2026-10-15: BTTS doubled
-# to ₦1,000 when O/U 1.5 was dropped, keeping ₦2,000 a round.
-STAKES = {"BTTS top 5": 1000}
-
-
-def stake_for(kind):
-    return STAKES.get(kind, STAKE_NAIRA)
 BEST_PER_MARKET = 5
+SHORT_LEGS = 3             # "top 3" tickets: the 3 strongest picks of a market's top 5
 HISTORY_PRIOR = 30
 MODEL_VERSION = "baseline_v0"
 # How picks are ranked: "combined" (model + odds + history, as requested),
@@ -46,38 +40,55 @@ MODEL_VERSION = "baseline_v0"
 # added noise. Kept as requested; switch here to compare live.
 SCORE = "combined"
 
-# Slip types still built and shown on the dashboard ("tracking only") but
-# NOT staked: left out of every ₦ total and not sent to Telegram. Dropped
-# 2026-10-14 at the user's request after losing every round of S30 R1-R5
-# (all-time they won 60/491 and 32/513, both net losers). So each round
-# stakes 5 slips = ₦2,500.
-# 2026-10-14 (later): the all-games ("10-game") slip dropped too -> 4 slips,
-# ₦2,000 a round.
-# 2026-10-15: O/U 1.5 dropped too -> 3 staked slips (1X2 ₦500, HT O/U 0.5
-# ₦500, BTTS ₦1,000) = ₦2,000 a round.
-UNPLAYED = {"HT_OU1.5 top 5", "OU2.5 top 5", "All-games slip", "OU1.5 top 5"}
-
-
-# "Best 6": the 6 strongest picks across the played market slips (one per
-# game -- Bet9ja won't combine two picks from the same game). Added
-# 2026-10-16, staked from season BEST6_FROM_SEASON onward; built for earlier
-# rounds too, but only as tracking.
+# "Best 6": the 6 strongest picks across the staked market slips (one per
+# game -- Bet9ja won't combine two picks from the same game).
 BEST6 = "Best 6"
 BEST6_LEGS = 6
-BEST6_FROM_SEASON = 31     # the season that started 2026-10-16 20:58 UTC
+
+# Staking plans by season: (first season, {slip type: ₦ stake}). Types not in
+# a season's plan are still built and shown on the dashboard, but only as
+# "tracking only" -- never staked, counted or sent to Telegram. Each change
+# starts with a new season so a season's money is never recalculated midway
+# (except the earlier tweaks below, which the user asked to apply to S30/S31).
+#   up to S30: (after 2026-10-14/15 changes) 1X2, HT O/U 0.5, BTTS ₦1,000
+#   S31:      + "Best 6" (added 2026-10-16)                      = ₦2,500
+#   S32 on:   each market as a top-5 AND a top-3 ticket, ₦500 each:
+#             3 x top 5 (₦1,500) + 3 x top 3 (₦1,500)            = ₦3,000
+PLANS = [
+    (None, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 1000}),
+    (31, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 1000, BEST6: 500}),
+    (32, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 500,
+          "1X2 top 3": 500, "HT_OU0.5 top 3": 500, "BTTS top 3": 500}),
+]
+
+
+def plan_for(season=None):
+    """The staking plan in force for a season. None = a brand-new season not
+    yet fingerprinted (see run.py cmd_scrape), necessarily the newest."""
+    plan = PLANS[0][1]
+    for first, p in PLANS:
+        if first is None or season is None or season >= first:
+            plan = p
+    return plan
 
 
 def _all_kinds():
-    return [f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip", BEST6]
+    return ([f"{m} top {BEST_PER_MARKET}" for m in MARKETS] + ["All-games slip", BEST6]
+            + [f"{m} top {SHORT_LEGS}" for m in MARKETS])
 
 
-def round_stake():
-    """₦ staked per round across the played slip types."""
-    return sum(stake_for(k) for k in played_kinds())
+def played_kinds(season=None):
+    plan = plan_for(season)
+    return [k for k in _all_kinds() if k in plan]
 
 
-def played_kinds():
-    return [k for k in _all_kinds() if k not in UNPLAYED]
+def stake_for(kind, season=None):
+    return plan_for(season).get(kind, STAKE_NAIRA)
+
+
+def round_stake(season=None):
+    """₦ staked per round under a season's plan (default: the newest)."""
+    return sum(plan_for(season).values())
 
 
 def slip_kind(name):
@@ -246,22 +257,21 @@ def build_slips(rounds, score=SCORE):
                         scored[market] = leg       # best selection of this market for this game
             scored_games[gid] = scored
 
-        slips = []
+        plan = plan_for(rnd.get("season"))
+        slips, short = [], []
         for market in MARKETS:
             legs = [g[market] for g in scored_games.values() if market in g]
             legs.sort(key=lambda leg: leg["score"], reverse=True)
             if len(legs) >= BEST_PER_MARKET:
-                slips.append(_slip(f"{market} top {BEST_PER_MARKET}", legs[:BEST_PER_MARKET]))
+                slips.append(_slip(f"{market} top {BEST_PER_MARKET}", legs[:BEST_PER_MARKET], plan))
+                short.append(_slip(f"{market} top {SHORT_LEGS}", legs[:SHORT_LEGS], plan))
         best_per_game = [max(g.values(), key=lambda leg: leg["score"]) for g in scored_games.values() if g]
         if len(best_per_game) >= 8:   # a full round is 10; tolerate a couple of unpriced games
-            slips.append(_slip(f"{len(best_per_game)}-game", best_per_game))
+            slips.append(_slip(f"{len(best_per_game)}-game", best_per_game, plan))
+        slips.extend(short)
 
-        best6 = _best6(slips)
+        best6 = _best6(slips, plan)
         if best6 is not None:
-            # Staked only from BEST6_FROM_SEASON on (season None = a brand-new
-            # season not yet fingerprinted, which is necessarily the newest).
-            season = rnd.get("season")
-            best6["played"] = best6["played"] and (season is None or season >= BEST6_FROM_SEASON)
             slips.append(best6)
         out.append({"round": rnd, "slips": slips})
 
@@ -275,32 +285,34 @@ def build_slips(rounds, score=SCORE):
     return out
 
 
-def _best6(slips):
-    """The BEST6_LEGS strongest picks across the played market slips, at
-    most one per game; None if there aren't enough distinct games."""
+def _best6(slips, plan):
+    """The BEST6_LEGS strongest picks across the staked top-5 market slips,
+    at most one per game; None if there aren't enough distinct games."""
     per_game = {}
     for slip in slips:
-        if not slip["played"] or slip_kind(slip["name"]) == "All-games slip":
+        if (not slip["played"] or slip_kind(slip["name"]) == "All-games slip"
+                or not slip["name"].endswith(f"top {BEST_PER_MARKET}")):
             continue
         for leg in slip["legs"]:
             cur = per_game.get(leg["teams"])
             if cur is None or leg["score"] > cur["score"]:
                 per_game[leg["teams"]] = leg
     legs = sorted(per_game.values(), key=lambda leg: leg["score"], reverse=True)[:BEST6_LEGS]
-    return _slip(BEST6, legs) if len(legs) == BEST6_LEGS else None
+    return _slip(BEST6, legs, plan) if len(legs) == BEST6_LEGS else None
 
 
-def _slip(name, legs):
+def _slip(name, legs, plan):
     odds = 1.0
     for leg in legs:
         odds *= leg["price"]
     settled = all(leg["won"] is not None for leg in legs)
     won = settled and all(leg["won"] for leg in legs)
+    kind = slip_kind(name)
+    stake = plan.get(kind, STAKE_NAIRA)
     return {
-        "name": name, "legs": legs, "odds": odds, "stake": stake_for(slip_kind(name)),
-        "played": slip_kind(name) not in UNPLAYED,
+        "name": name, "legs": legs, "odds": odds, "stake": stake, "played": kind in plan,
         "settled": settled, "won": won if settled else None,
-        "returned": stake_for(slip_kind(name)) * odds if won else 0.0,
+        "returned": stake * odds if won else 0.0,
         "legs_won": sum(1 for leg in legs if leg["won"]),
     }
 
@@ -351,7 +363,8 @@ def season_totals(built):
         if rnd["status"] != "settled" or not entry["slips"] or rnd.get("season") is None:
             continue
         t = out.setdefault(rnd["season"], {"rounds": 0, "slips": 0, "won": 0, "staked": 0.0,
-                                            "returned": 0.0, "last_round": 0, "_last_seen": ""})
+                                            "returned": 0.0, "last_round": 0, "_last_seen": "",
+                                            "by_legs": defaultdict(float)})
         t["rounds"] += 1
         t["_last_seen"] = max(t["_last_seen"], rnd.get("sort") or "")
         t["last_round"] = max(t["last_round"], rnd["key"][1])
@@ -360,6 +373,9 @@ def season_totals(built):
             t["won"] += int(bool(slip["won"]))
             t["staked"] += slip["stake"]
             t["returned"] += slip["returned"]
+            for n in (BEST_PER_MARKET, SHORT_LEGS):
+                if slip["name"].endswith(f"top {n}"):
+                    t["by_legs"][n] += slip["returned"] - slip["stake"]
     order = sorted(out, key=lambda s: out[s]["_last_seen"])
     current = order[-1] if order else None
     ordered = {}
@@ -368,5 +384,7 @@ def season_totals(built):
         t.pop("_last_seen")
         t["profit"] = t["returned"] - t["staked"]
         t["complete"] = season != current or t["last_round"] >= ROUNDS_PER_SEASON
+        # Top-5 vs top-3 comparison only means something when both are staked.
+        t["by_legs"] = dict(t["by_legs"]) if len(t["by_legs"]) == 2 else {}
         ordered[season] = t
     return ordered

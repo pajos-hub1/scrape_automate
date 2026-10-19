@@ -78,12 +78,15 @@ def test_round_in_play_is_shown_but_not_counted_or_learned_from():
 
 def test_stakes_per_slip_type():
     from track.betslips import round_stake, stake_for
+    assert stake_for("BTTS top 5", 31) == 1000 and stake_for("BTTS top 5", 32) == 500
+    assert round_stake(30) == 2000                     # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000
+    assert round_stake(31) == 2500                     # + Best 6 500
+    assert round_stake(32) == 3000                     # 3 x top 5 + 3 x top 3, ₦500 each
     rnd = _round("R1", {i: _game(i, True, home_won=True) for i in range(10)})
+    rnd["season"] = 31
     slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
-    assert slips["1X2 top 5"]["stake"] == 500
+    assert slips["1X2 top 5"]["stake"] == 500 and slips["1X2 top 5"]["played"]
     assert slips["1X2 top 5"]["returned"] == pytest.approx(500 * 1.5 ** 5)
-    assert stake_for("BTTS top 5") == 1000
-    assert round_stake() == 2500                       # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000 + Best 6 500
     assert not slips["OU1.5 top 5"]["played"]
 
 
@@ -101,13 +104,12 @@ def test_best6_takes_strongest_picks_one_per_game():
     for i, g in games.items():                    # make every game's 1X2 Home a distinct strength
         g["markets"]["1X2"][0]["model_p"] = g["markets"]["1X2"][0]["odds_p"] = 0.5 + i * 0.03
     rnd = _round("R1", games)
-    rnd["season"] = b.BEST6_FROM_SEASON
+    rnd["season"] = 31
     slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
     best6 = slips["Best 6"]
     assert len(best6["legs"]) == 6
     assert len({leg["teams"] for leg in best6["legs"]}) == 6          # one pick per game
-    pool = [leg for s in slips.values() if s["played"] and s["name"] != "Best 6"
-            and not s["name"].endswith("-game") for leg in s["legs"]]
+    pool = [leg for s in slips.values() if s["played"] and s["name"].endswith("top 5") for leg in s["legs"]]
     strongest = {}
     for leg in pool:
         if leg["teams"] not in strongest or leg["score"] > strongest[leg["teams"]]["score"]:
@@ -120,6 +122,31 @@ def test_best6_takes_strongest_picks_one_per_game():
 def test_best6_not_staked_before_its_start_season():
     import track.betslips as b
     rnd = _round("R1", {i: _full_game(i) for i in range(10)})
-    rnd["season"] = b.BEST6_FROM_SEASON - 1
-    best6 = next(s for s in build_slips([rnd])[0]["slips"] if s["name"] == "Best 6")
-    assert not best6["played"]
+    for season, staked in ((30, False), (31, True), (32, False)):    # Best 6 only in S31's plan
+        rnd["season"] = season
+        best6 = next(s for s in build_slips([rnd])[0]["slips"] if s["name"] == "Best 6")
+        assert best6["played"] is staked, season
+
+
+
+def test_season32_top5_and_top3_tickets():
+    from track.betslips import season_totals
+    rnd = _round("R1", {i: _full_game(i) for i in range(10)})
+    rnd["season"], rnd["key"] = 32, (32, 1)
+    slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
+    staked = sorted(n for n, s in slips.items() if s["played"])
+    assert staked == sorted(["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5", "1X2 top 3", "HT_OU0.5 top 3", "BTTS top 3"])
+    for m in ("1X2", "HT_OU0.5", "BTTS"):
+        assert slips[f"{m} top 3"]["legs"] == slips[f"{m} top 5"]["legs"][:3]   # 3 strongest of the 5
+        assert slips[f"{m} top 3"]["stake"] == slips[f"{m} top 5"]["stake"] == 500
+    t = season_totals(build_slips([rnd]))[32]
+    assert t["staked"] == 3000 and set(t["by_legs"]) == {5, 3}
+    assert sum(t["by_legs"].values()) == pytest.approx(t["profit"])
+
+
+def test_no_top3_comparison_before_season32():
+    from track.betslips import season_totals
+    rnd = _round("R1", {i: _full_game(i) for i in range(10)})
+    rnd["season"], rnd["key"] = 31, (31, 1)
+    t = season_totals(build_slips([rnd]))[31]
+    assert t["by_legs"] == {} and t["staked"] == 2500

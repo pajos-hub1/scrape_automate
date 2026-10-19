@@ -22,7 +22,7 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
-from track.betslips import (BEST6_FROM_SEASON, STAKES, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
+from track.betslips import (_all_kinds, build_slips, load_rounds, played, played_kinds, round_stake, stake_for,
                             season_totals, summarize)
 
 MAX_LEN = 4000   # Telegram's hard limit is 4096 chars per message
@@ -81,23 +81,27 @@ def format_result(entry, season_total=None):
         season = entry["round"].get("season")
         lines += ["", f"Season {season} so far ({season_total['rounds']} rounds, from ₦0): "
                       f"<b>{_naira(season_total['profit'], sign=True)}</b>"]
+        if season_total.get("by_legs"):
+            parts = [f"top {n}: {_naira(p, sign=True)}" for n, p in sorted(season_total["by_legs"].items(), reverse=True)]
+            lines.append("This season, " + " · ".join(parts))
     return "\n".join(lines)
 
 
-# One correction per version of the dropped set, so changing UNPLAYED again
-# sends a fresh, accurate correction (and never a stale one).
-RECALC_KEY = ("recalc:drop-" + "-".join(sorted(k.split()[0].lower() for k in UNPLAYED))
-              + "".join(f":{k.split()[0].lower()}={v}" for k, v in sorted(STAKES.items()))
-              + f":best6from{BEST6_FROM_SEASON}")
+# Key of the last mid-season correction (S31, Best 6 added). Frozen: since
+# 2026-10-19 slip changes take effect from a NEW season (track/betslips.py
+# PLANS), which starts from ₦0 and needs no recalculation message. Change
+# this string only if a mid-season recalculation is ever wanted again.
+RECALC_KEY = "recalc:drop-all-games-ht_ou1.5-ou1.5-ou2.5:btts=1000:best6from31"
 RECALC_BEFORE = "2026-10-16T21:00:00+00:00"   # chats connected before the latest change
 
 
 def format_recalc(season, entries, totals):
     title = lambda k: "10-game slip" if k == "All-games slip" else _slip_title({"name": k})
-    from track.betslips import stake_for
-    staked = ", ".join(f"{title(k)} {_naira(stake_for(k))}" for k in played_kinds())
-    dropped = ", ".join(sorted(title(k) for k in UNPLAYED))
-    lines = [f"🔁 <b>Slips changed: {len(played_kinds())} per round now ({_naira(round_stake())})</b>",
+    staked = ", ".join(f"{title(k)} {_naira(stake_for(k, season))}" for k in played_kinds(season))
+    dropped = ", ".join(sorted(title(k) for k in _all_kinds()
+                               if k not in played_kinds(season) and not k.endswith("top 3")))
+    lines = [f"🔁 <b>Slips changed: {len(played_kinds(season))} per round now "
+             f"({_naira(round_stake(season))})</b>",
              f"Staked: {html.escape(staked)}.",
              f"Dropped -- no longer sent or counted: {html.escape(dropped)}.",
              "", f"<b>Season {season} recalculated from round 1</b>:"]

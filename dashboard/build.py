@@ -10,7 +10,7 @@ from dashboard.charts import accuracy_trend_chart, cumulative_profit_chart, fmt_
 from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, get_profit_trend,
                             get_recent_season_ids, get_round_history)
 from dashboard.health import get_health
-from track.betslips import (STAKE_NAIRA, UNPLAYED, build_slips, load_rounds, played, played_kinds, round_stake,
+from track.betslips import (STAKE_NAIRA, build_slips, load_rounds, played, played_kinds, round_stake,
                             season_totals, stake_for, summarize)
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
@@ -165,14 +165,15 @@ def _render_betslips_section(conn):
     rows, tot = [], {"slips": 0, "won": 0, "staked": 0.0, "returned": 0.0}
     for kind in order:
         t = summary[kind]
-        if kind not in UNPLAYED:                 # dropped slip types: shown, never counted
+        staked_kinds = played_kinds(current)
+        if kind in staked_kinds:                 # other types: shown as tracking only, never counted
             for k in tot:
                 tot[k] += t[k]
         label = kind
         for code, lab in SLIP_MARKET_LABELS.items():
             if kind.startswith(code + " "):
                 label = lab + kind[len(code):]
-        if kind in UNPLAYED:
+        if kind not in staked_kinds:
             label += " (tracking only, not staked)"
         rows.append((label, t))
     rows.append(("Total", dict(tot, profit=tot["returned"] - tot["staked"], biggest_win=None)))
@@ -756,6 +757,9 @@ wireBrowser('.slip-panel', 'slip-nav-label', 'slip-prev', 'slip-next');
 
 
 def build_dashboard(conn, out_path=OUT_PATH):
+    # Heading shows the staking plan of the season being played right now.
+    row = conn.execute("SELECT season_id FROM seasons WHERE status = 'current'").fetchone()
+    plan_season = row["season_id"] if row else None
     meta = get_meta(conn)
     stats = accuracy_stats(conn, model_version=DASHBOARD_MODELS)  # per-market tiles
     models_and_stats = get_models_and_stats(conn)
@@ -780,9 +784,10 @@ def build_dashboard(conn, out_path=OUT_PATH):
         betslips_html=_render_betslips_section(conn),
         stake_naira=STAKE_NAIRA,
         stake_breakdown=", ".join(
-            f"{SLIP_MARKET_LABELS.get(k.split()[0], k)} ₦{stake_for(k):,}" for k in played_kinds()),
-        slips_per_round=len(played_kinds()),
-        round_stake=f"{round_stake():,}",
+            f"{SLIP_MARKET_LABELS.get(k.split()[0], k)}{' ' + ' '.join(k.split()[1:]) if k.split()[0] in SLIP_MARKET_LABELS else ''}"
+            f" ₦{stake_for(k, plan_season):,}" for k in played_kinds(plan_season)),
+        slips_per_round=len(played_kinds(plan_season)),
+        round_stake=f"{round_stake(plan_season):,}",
         profit_trend_html=cumulative_profit_chart(get_profit_trend(conn, season_ids)),
     )
 
