@@ -12,6 +12,7 @@ from dashboard.data import (get_accuracy_trend, get_meta, get_models_and_stats, 
 from dashboard.health import get_health
 from track.betslips import (STAKE_NAIRA, build_slips, load_rounds, played, played_kinds, round_stake,
                             season_totals, stake_for, summarize)
+from track.cuts import cut_stats, verdict as cut_verdict
 from track.report import PROB_MARKETS, accuracy_stats, probability_stats, profit_stats, roi, verdict
 
 OUT_PATH = BASE_DIR / "docs" / "index.html"
@@ -144,9 +145,8 @@ def _render_slip(slip):
             f'<tbody>{"".join(rows)}</tbody></table></div></div>')
 
 
-def _render_betslips_section(conn):
-    """Paper accumulators, ₦500 each -- see track/betslips.py."""
-    built = build_slips(load_rounds(conn))
+def _render_betslips_section(built):
+    """Paper accumulators -- see track/betslips.py."""
     if not built:
         return '<p class="empty">No rounds yet.</p>'
 
@@ -660,6 +660,15 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
+  <h2>Cut tracker: are "sure" picks losing more than the odds say?</h2>
+  <p class="section-note">Checks the suspicion that the bookmaker makes low-odds favourites lose more often
+  than their prices imply. Every number is compared with what Bet9ja's own odds predicted (margin removed).
+  ✅ = within normal luck; ⚠️ = a gap bigger than luck usually explains (|z| &ge; 2) -- only meaningful if it
+  keeps showing up. Includes tickets losing by exactly one pick, the most painful kind of loss.</p>
+  {cuts_html}
+</section>
+
+<section>
   <h2>Return on a flat 1-unit stake, per market</h2>
   <p class="section-note">What accuracy can't show: whether backing every pick at its closing
   odds would have made money. Bet9ja's Zoom odds are very well calibrated (outcomes priced at 25%
@@ -756,7 +765,37 @@ wireBrowser('.slip-panel', 'slip-nav-label', 'slip-prev', 'slip-next');
 """
 
 
+def _render_cuts_section(built):
+    """Cut tracker -- see track/cuts.py."""
+    seasons = season_totals(built)
+    if not seasons:
+        return '<p class="empty">No settled rounds yet.</p>'
+    current = next(reversed(seasons))
+    cur_rows = {r["label"]: r for r in cut_stats(built, season=current)}
+    all_rows = cut_stats(built)
+
+    def cell(r):
+        if r is None:
+            return "<td>&mdash;</td>"
+        pct = lambda x: f"{x / r['n'] * 100:.1f}%"
+        if r["unit"] in ("games", "picks"):
+            text = f"{pct(r['actual'])} vs {pct(r['expected'])} expected"
+        else:
+            text = f"{r['actual']:.0f} vs {r['expected']:.0f} expected"
+        flag = "miss" if r["unusual"] else "hit"
+        return (f'<td class="{flag}">{"⚠️" if r["unusual"] else "✅"} {text} '
+                f'<span class="conf">(n={r["n"]:,})</span></td>')
+
+    body = "".join(f'<tr><td>{html.escape(r["label"])}</td>{cell(cur_rows.get(r["label"]))}{cell(r)}</tr>'
+                   for r in all_rows)
+    return (f'<p class="section-note"><strong>Season {current}:</strong> {html.escape(cut_verdict(list(cur_rows.values())))}'
+            f' &middot; <strong>all seasons:</strong> {html.escape(cut_verdict(all_rows))}</p>'
+            '<div class="table-scroll"><table><thead><tr><th>Check</th>'
+            f'<th>Season {current}</th><th>All seasons</th></tr></thead><tbody>{body}</tbody></table></div>')
+
+
 def build_dashboard(conn, out_path=OUT_PATH):
+    built = build_slips(load_rounds(conn))
     # Heading shows the staking plan of the season being played right now.
     row = conn.execute("SELECT season_id FROM seasons WHERE status = 'current'").fetchone()
     plan_season = row["season_id"] if row else None
@@ -781,7 +820,8 @@ def build_dashboard(conn, out_path=OUT_PATH):
         profit_html=_render_profit_section(conn, sorted(models_and_stats)),
         probability_html=_render_probability_section(conn, sorted(models_and_stats)),
         health_html=_render_health_section(get_health(conn)),
-        betslips_html=_render_betslips_section(conn),
+        betslips_html=_render_betslips_section(built),
+        cuts_html=_render_cuts_section(built),
         stake_naira=STAKE_NAIRA,
         stake_breakdown=", ".join(
             f"{SLIP_MARKET_LABELS.get(k.split()[0], k)}{' ' + ' '.join(k.split()[1:]) if k.split()[0] in SLIP_MARKET_LABELS else ''}"

@@ -15,6 +15,7 @@ repo secrets). Without them it does nothing; send errors are logged and
 never fail the cycle.
 """
 import hashlib
+from datetime import datetime, timezone
 import html
 import json
 import os
@@ -22,6 +23,7 @@ import urllib.request
 
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
+from track.cuts import cut_stats, verdict as cut_verdict
 from track.betslips import (_all_kinds, build_slips, load_rounds, played, played_kinds, round_stake, stake_for,
                             season_totals, summarize)
 
@@ -113,6 +115,29 @@ def format_recalc(season, entries, totals):
                      f"{_naira(result, sign=True)}")
     lines += ["", f"Season {season} so far ({totals['rounds']} rounds, from ₦0): "
                   f"<b>{_naira(totals['profit'], sign=True)}</b>"]
+    return "\n".join(lines)
+
+
+WEEKLY_CUTS = True
+
+
+def _cut_line(r):
+    pct = lambda x: f"{x / r['n'] * 100:.1f}%"
+    if r["unit"] in ("games", "picks"):
+        body = f"{r['actual']:,.0f} of {r['n']:,} {r['unit']} ({pct(r['actual'])}) -- odds said {pct(r['expected'])}"
+    else:
+        body = f"{r['actual']:,.0f} of {r['n']:,} -- odds said {r['expected']:,.0f}"
+    return f"{'⚠️' if r['unusual'] else '✅'} {html.escape(r['label'])}: {body}"
+
+
+def format_cut_check(season, rounds, season_rows, all_rows):
+    lines = [f"📊 <b>Weekly cut check</b> -- are \"sure\" picks losing more than the odds say?", "",
+             f"<b>Season {season}</b> ({rounds} rounds): {html.escape(cut_verdict(season_rows))}"]
+    lines += [_cut_line(r) for r in season_rows]
+    lines += ["", f"<b>All seasons</b>: {html.escape(cut_verdict(all_rows))}"]
+    lines += [_cut_line(r) for r in all_rows]
+    lines += ["", "✅ = within normal luck. ⚠️ would mean results are drifting from the odds -- "
+                  "worth watching only if it repeats week after week."]
     return "\n".join(lines)
 
 
@@ -238,6 +263,16 @@ def pending_messages(conn, built=None, suffix=""):
         if not seasons[current]["complete"]:
             out.append((RECALC_KEY, format_recalc(current, [e for e in settled if e["round"].get("season") == current],
                                                   seasons[current])))
+
+    # Weekly cut check (track/cuts.py), once per ISO week, to chats already
+    # receiving messages.
+    if WEEKLY_CUTS and "hello" in sent and seasons:
+        year, week, _ = datetime.now(timezone.utc).isocalendar()
+        key = f"cuts:{year}-W{week:02d}"
+        if key not in sent:
+            current = list(seasons)[-1]
+            out.append((key, format_cut_check(current, seasons[current]["rounds"],
+                                              cut_stats(built, season=current), cut_stats(built))))
 
     upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
     if upcoming:

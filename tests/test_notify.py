@@ -7,7 +7,7 @@ from track.notify import _chunks, format_result, format_upcoming, notify
 
 
 def _slip(name, legs_won, n, won, price=1.3):
-    legs = [{"teams": (f"A{i}", f"B{i}"), "market": "OU1.5", "selection": "Over", "price": price,
+    legs = [{"teams": (f"A{i}", f"B{i}"), "market": "OU1.5", "selection": "Over", "price": price, "odds_p": 0.95 / price,
              "won": (i < legs_won) if won is not None else None} for i in range(n)]
     odds = price ** n
     return {"name": name, "legs": legs, "odds": odds, "stake": 500, "played": True, "settled": won is not None,
@@ -33,6 +33,7 @@ def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
     db_path, _ = env
     built = [_entry("settled", [_slip("OU1.5 top 5", 5, 5, True)]),
              _entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 7 (upcoming)")]
+    monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", False)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
@@ -103,6 +104,7 @@ def _upcoming(price, number=14):
 
 
 def _run(env, monkeypatch, built, outbox):
+    monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", False)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
@@ -214,7 +216,8 @@ def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
     assert got[-3:] == ["bad", "bad", "111"]       # retried for the failed chat, then "fixed" note to owner
 
 
-def _run_chats(env, monkeypatch, built, sender, chats, recalc_before="2000-01-01"):
+def _run_chats(env, monkeypatch, built, sender, chats, recalc_before="2000-01-01", weekly_cuts=False):
+    monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", weekly_cuts)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", recalc_before)   # tests must not depend on the clock
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
@@ -293,3 +296,18 @@ def test_unplayed_slips_not_sent_or_counted():
     up["slips"].append(dict(dropped, won=None, settled=False))
     msg = format_upcoming(up)
     assert "Over/Under 2.5" not in msg and "₦500 total" in msg
+
+
+
+def test_weekly_cut_check_sent_once_per_week(env, monkeypatch):
+    built = [_settled(32, 1, True)]
+    for e in built:
+        e["round"]["games"] = {}
+    got = []
+    sender = lambda text, chat_id: got.append(text)
+    _run_chats(env, monkeypatch, built, sender, ["me"], weekly_cuts=True)        # hello + result
+    _run_chats(env, monkeypatch, built, sender, ["me"], weekly_cuts=True)        # now the weekly check
+    checks = [t for t in got if "Weekly cut check" in t]
+    assert len(checks) == 1 and "Season 32" in checks[0]
+    _run_chats(env, monkeypatch, built, sender, ["me"], weekly_cuts=True)
+    assert len([t for t in got if "Weekly cut check" in t]) == 1               # once per week
