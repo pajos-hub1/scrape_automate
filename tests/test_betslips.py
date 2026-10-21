@@ -82,6 +82,7 @@ def test_stakes_per_slip_type():
     assert round_stake(30) == 2000                     # 1X2 500 + HT O/U 0.5 500 + BTTS 1,000
     assert round_stake(31) == 2500                     # + Best 6 500
     assert round_stake(32) == 3000                     # 3 x top 5 + 3 x top 3, ₦500 each
+    assert round_stake(33) == 1500                     # 3 x top 5 only
     rnd = _round("R1", {i: _game(i, True, home_won=True) for i in range(10)})
     rnd["season"] = 31
     slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
@@ -150,3 +151,12 @@ def test_no_top3_comparison_before_season32():
     rnd["season"], rnd["key"] = 31, (31, 1)
     t = season_totals(build_slips([rnd]))[31]
     assert t["by_legs"] == {} and t["staked"] == 2500
+
+
+
+def test_season33_top5_only():
+    rnd = _round("R1", {i: _full_game(i) for i in range(10)})
+    rnd["season"], rnd["key"] = 33, (33, 1)
+    slips = {s["name"]: s for s in build_slips([rnd])[0]["slips"]}
+    assert sorted(n for n, s in slips.items() if s["played"]) == ["1X2 top 5", "BTTS top 5", "HT_OU0.5 top 5"]
+    assert not slips["BTTS top 3"]["played"]                  # still built, tracking only

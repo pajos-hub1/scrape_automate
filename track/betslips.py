@@ -52,13 +52,18 @@ BEST6_LEGS = 6
 # (except the earlier tweaks below, which the user asked to apply to S30/S31).
 #   up to S30: (after 2026-10-14/15 changes) 1X2, HT O/U 0.5, BTTS ₦1,000
 #   S31:      + "Best 6" (added 2026-10-16)                      = ₦2,500
-#   S32 on:   each market as a top-5 AND a top-3 ticket, ₦500 each:
+#   S32:      each market as a top-5 AND a top-3 ticket, ₦500 each:
 #             3 x top 5 (₦1,500) + 3 x top 3 (₦1,500)            = ₦3,000
+#   S33 on:   3 x top 5 only                                     = ₦1,500
 PLANS = [
     (None, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 1000}),
     (31, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 1000, BEST6: 500}),
     (32, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 500,
           "1X2 top 3": 500, "HT_OU0.5 top 3": 500, "BTTS top 3": 500}),
+    # S33 on (user's choice 2026-10-21): top-5 tickets only, ₦500 each = ₦1,500.
+    # Top-3 tickets stay built as tracking only (backtest: top 3 lost -13.6%
+    # vs top 5 -18.0%, and win about 2-3x as often).
+    (33, {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 500}),
 ]
 
 
