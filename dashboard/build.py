@@ -807,7 +807,7 @@ def _render_cuts_section(built):
 def _render_leagues_section(conn):
     """Other leagues' paper tickets + merged cross-league tickets
     (track/league_slips.py)."""
-    from track.league_slips import FLAGS, LEAGUES, build_league, league_totals, merged_name, merged_tickets
+    from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, league_totals, merged_name, merged_tickets
     rows = []
     for cid, name in LEAGUES.items():
         b = build_league(conn, cid)
@@ -860,7 +860,24 @@ def _render_leagues_section(conn):
                   f'<td class="{"hit" if l["won"] else "miss" if l["won"] is False else ""}">'
                   f'{"&#10003;" if l["won"] else "&#10007;" if l["won"] is False else "pending"}</td></tr>' for l in t["legs"])
         + "</tbody></table></div></div>" for t in latest)
-    return "".join([league_table, "<h3>Merged tickets (best picks across all 7 leagues, ₦500 each)</h3>", merged_table,
+    from track.league_report import MIN_ROUNDS, compare_leagues
+    comp_rows, _ = compare_leagues(conn)
+    def _comp_row(i, r):
+        name = f'{FLAGS[r["cid"]]} {html.escape(FULL_NAMES[r["cid"]])}'
+        if not r["rounds"]:
+            return f"<tr><td>{name}</td><td colspan=6>no finished rounds with odds yet</td></tr>"
+        flag = "⚠️" if abs(r["z"]) >= 2 else "✅"
+        early = ' <span class="conf">(early)</span>' if r["rounds"] < MIN_ROUNDS else ""
+        return (f'<tr><td>{name}{early}</td><td>{r["rounds"]}</td>'
+                f'<td>{r["tickets_won"]}/{r["tickets"]} <span class="conf">({r["tickets_expected"]:.1f} expected)</span></td>'
+                f'<td class="{"hit" if r["roi"] > 0 else "miss"}">{r["roi"] * 100:+.1f}%</td>'
+                f'<td>{r["pick_rate"] * 100:.1f}% <span class="conf">vs {r["pick_expected"] * 100:.1f}%</span> {flag}</td>'
+                f'<td>{r["cut"] * 100:.1f}%</td></tr>')
+    comp_table = ('<div class="table-scroll"><table><thead><tr><th>League</th><th>Rounds</th><th>Tickets won</th>'
+                  '<th>Ticket return</th><th>Picks won vs odds</th><th>Cut per pick</th></tr></thead>'
+                  f'<tbody>{"".join(_comp_row(i, r) for i, r in enumerate(comp_rows))}</tbody></table></div>')
+    return "".join(["<h3>League comparison (Step 3) &mdash; best to worst</h3>", comp_table, league_table,
+                    "<h3>Merged tickets (best picks across all 7 leagues, ₦500 each)</h3>", merged_table,
                     f"<h3>Latest merged tickets{(' &mdash; ' + html.escape(latest[0]['label'])) if latest else ''}</h3>",
                     latest_html or '<p class="empty">None yet.</p>'])
 

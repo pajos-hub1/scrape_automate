@@ -10,7 +10,7 @@ import hashlib
 import html
 from collections import defaultdict
 
-from track.betslips import played
+from track.betslips import played, summarize
 from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, league_totals, merged_tickets
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
@@ -57,7 +57,7 @@ def league_messages(sent, connect=None):
         built = {cid: build_league(conn, cid) for cid in LEAGUES}
         merged = merged_tickets(conn)
 
-    from track.notify import format_result, format_upcoming      # lazy: notify imports this module
+    from track.notify import format_result, format_season_summary, format_upcoming   # lazy: notify imports this module
     out = []
     for cid, b in built.items():
         name, totals = FULL_NAMES[cid], league_totals(b)
@@ -77,6 +77,15 @@ def league_messages(sent, connect=None):
                 if key not in sent:
                     parts.append(format_upcoming(e, league=name))
                     keys.append(key)
+        # End of a league season: one summary, like Premier's.
+        for season, t in totals.items():
+            key = f"lgseason:{cid}:{season}"
+            if key in sent or not _season_over(b, season):
+                continue
+            season_no = next(e["round"]["season_no"] for e in b if e["round"]["season"] == season)
+            parts.append(format_season_summary(season, t, summarize(b, season=season), league=name,
+                                               season_name=f"Season {season_no}"))
+            keys.append(key)
         if parts:                                           # one message per league, like Premier's
             out.append((f"lgmsg:{cid}:" + _digest(keys), "\n\n\n".join(parts)))
             out += [(k, None) for k in keys]
@@ -115,6 +124,18 @@ def league_messages(sent, connect=None):
         out.append(("lgbatch:res:" + _digest(res_keys), "📊 <b>Merged ticket results</b>\n\n" + "\n\n".join(res_lines)))
         out += [(k, None) for k in res_keys]
     return out
+
+
+def _season_over(built, season):
+    """A league season is over once its last round has settled (34 or 38
+    rounds, by games per round) or a later season has appeared."""
+    rounds = [e["round"] for e in built if e["round"]["season"] == season]
+    # Only a FINISHED later round counts: the new season's Round 1 is listed
+    # while this season's last round is still being played.
+    later = any(e["round"]["status"] == "settled" and e["round"]["season"] > season for e in built)
+    gpr = max((len(r["games"]) for r in rounds), default=10)
+    last = max((r["number"] for r in rounds if r["status"] == "settled"), default=0)
+    return later or last >= (38 if gpr >= 10 else 34)
 
 
 def _digest(keys):

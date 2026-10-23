@@ -166,10 +166,11 @@ def format_catchup(entries):
     return "\n".join(lines)
 
 
-def format_season_summary(season, totals, by_type):
+def format_season_summary(season, totals, by_type, league=PREMIER_NAME, season_name=None):
     """End-of-season report: that season's own money, starting from ₦0."""
     icon = "🏆" if totals["profit"] > 0 else "📉"
-    lines = [f"{icon} <b>Season {season} finished: {_naira(totals['profit'], sign=True)}</b>",
+    name = season_name or f"Season {season}"
+    lines = [f"{icon} <b>{html.escape(league)} · {html.escape(name)} finished: {_naira(totals['profit'], sign=True)}</b>",
              f"{totals['rounds']} rounds · {totals['won']}/{totals['slips']} slips won",
              f"Staked {_naira(totals['staked'])} · returned {_naira(totals['returned'])}", "",
              "<b>By slip type</b>"]
@@ -291,6 +292,14 @@ def pending_messages(conn, built=None, suffix=""):
         if key not in sent:
             out.append((key, format_season_summary(finished_now, seasons[finished_now],
                                                    summarize(built, season=finished_now))))
+        # Step 3, every Premier season: compare all the leagues (track/league_report.py).
+        key = f"step3:{finished_now}"
+        if LEAGUE_MESSAGES and key not in sent:
+            try:
+                from track.league_report import format_comparison
+                out.append((key, format_comparison(conn, f"League comparison · after PREMIER season {finished_now}")))
+            except Exception as e:  # noqa: BLE001
+                print(f"   (league comparison skipped: {type(e).__name__}: {e})")
 
     # One-time correction after dropping the two UNPLAYED slip types: the
     # current season's results so far, recalculated without them.

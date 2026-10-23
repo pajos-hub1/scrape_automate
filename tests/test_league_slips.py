@@ -128,3 +128,36 @@ def test_merged_sets_follow_premier_rounds_and_never_reuse_a_round(env):
         assert {l["league"] for l in r3[0]["legs"]} == {1, 2, 3, 4}
         all_ids = [l["ext_match_id"] for t in ls.merged_tickets(conn) if t["k"] == 2 and t["market"] == "1X2" for l in t["legs"]]
         assert len(all_ids) == len(set(all_ids))                                   # no game bet twice
+
+
+def test_league_season_summary_only_after_the_last_round(env):
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        _add_season(conn, 3, 3000, rounds=33, gpr=9)              # 18-team league: 34 rounds
+        _upcoming(conn, 3, 3000, 34, gpr=9)
+        ls.build_league(conn, 3, now=NOW)                          # staked from R34
+        _upcoming(conn, 3, 8000, 1, gpr=9)                         # next season's R1 already listed
+    summaries = lambda msgs: [t for _, t in msgs if t and "finished" in t]
+    assert summaries(ln.league_messages({"hello"}, connect=connect)) == []   # R34 not finished yet
+    with connect() as conn:
+        for k in range(9):                                         # R34 finishes
+            conn.execute("INSERT INTO lg_matches VALUES (?, 3, 'x', 3000, 34, ?, 'a', 'b', 2, 1, 1, 0, 't', 's')",
+                         (3000 + 33 * 9 + k, k + 1))
+    msgs = ln.league_messages({"hello"}, connect=connect)
+    s = summaries(msgs)
+    assert len(s) == 1 and "BUNDESLIGA (GERMANY) · Season 1 finished" in s[0]
+    assert summaries(ln.league_messages({"hello"} | {k for k, _ in msgs}, connect=connect)) == []   # once
+
+
+def test_league_comparison(env):
+    import track.league_report as lr
+    with get_connection(env[0]) as conn:
+        for cid in (1, 2):
+            _add_season(conn, cid, cid * 10000, rounds=12)
+        rows, merged = lr.compare_leagues(conn)
+        by = {r["cid"]: r for r in rows}
+        assert by[1]["rounds"] == 12 and by[1]["tickets"] == 36 and by[1]["picks"] == 180
+        assert by[2]["cut"] == pytest.approx(1 - (1 / 1.5) / (1 / 1.5 + 1 / 4.0 + 1 / 6.0) * 1.5, abs=0.02)
+        assert by[5]["rounds"] == 0
+        text = lr.format_comparison(conn, "League comparison · after PREMIER season 33")
+        assert "PREMIER (ENGLAND)" in text and "LIGA (SPAIN)" in text and "no finished rounds with odds yet" in text
