@@ -94,6 +94,6 @@ def test_combined_message_sent_once_and_marks_every_item(env, monkeypatch):
     connect = lambda: get_connection(env[0])
     msgs = ln.league_messages({"hello"}, connect=connect)
     texts = [t for _, t in msgs if t]
-    assert len(texts) == 1 and "Merged tickets" in texts[0] and "1X2 merged top 1" in texts[0]
+    assert len(texts) == 1 and "Merged tickets" in texts[0] and "1X2 · top 1" in texts[0]
     sent = {"hello"} | {k for k, _ in msgs}
     assert [t for _, t in ln.league_messages(sent, connect=connect) if t] == []                 # nothing repeated
