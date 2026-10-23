@@ -198,7 +198,7 @@ def reconcile(conn):
     """
     pending = conn.execute(
         """SELECT p.prediction_id, p.fixture_ref, p.market, p.label AS predicted_label,
-                  f.season_id, f.round_number, f.team_a, f.team_b, f.scraped_at
+                  f.season_id, f.round_number, f.team_a, f.team_b, f.scraped_at, f.ext_match_id
            FROM predictions p
            JOIN fixtures f ON f.fixture_id = p.fixture_ref
            LEFT JOIN prediction_results pr ON pr.prediction_id = p.prediction_id
@@ -213,9 +213,18 @@ def reconcile(conn):
     reconciled = still_pending = 0
 
     for row in pending:
-        match = _find_match_across_seasons(
-            conn, match_cache, row["season_id"], row["team_a"], row["team_b"], row["scraped_at"]
-        )
+        match = None
+        if row["ext_match_id"] is not None:
+            # Exact: the same bet9ja matchId on the fixture and the result.
+            m = conn.execute(
+                "SELECT match_id, ft_a, ft_b, ht_a, ht_b, scraped_at FROM matches WHERE ext_match_id = ?",
+                (row["ext_match_id"],),
+            ).fetchone()
+            match = dict(m) if m else None
+        if match is None:
+            match = _find_match_across_seasons(
+                conn, match_cache, row["season_id"], row["team_a"], row["team_b"], row["scraped_at"]
+            )
 
         if match is None or match["ft_a"] is None:
             still_pending += 1

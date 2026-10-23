@@ -10,7 +10,7 @@ DB_PATH = BASE_DIR / "data" / "zoom.db"
 # tables get moved into a new, frozen archive file (see db/archive.py).
 DB_GZ_PATH = DB_PATH.with_suffix(".db.gz")
 ARCHIVE_DIR = BASE_DIR / "data" / "archive"
-ARCHIVE_TRIGGER_MB = 50
+ARCHIVE_TRIGGER_MB = 15        # was 50; at 31 MB raw the DB committed every 15 min was ~8 MB gzipped (2026-10-23)
 ARCHIVE_KEEP_DAYS = 2
 
 # The dashboard's per-round accuracy trend charts cover only the most
@@ -39,6 +39,11 @@ FIXTURES_URL = "https://sports.bet9ja.com/mobile/sport/zoomsoccer/101"
 LEAGUE_FILTER = "Premier"
 
 ROUNDS_PER_SEASON = 38
+
+# bet9ja's competition id for Premier-Zoom in its Zoom APIs (scraper/zoom_api.py).
+PREMIER_COMPETITION_ID = 1
+# Markets stored for the other-leagues analysis (lg_odds).
+LEAGUE_MARKETS = ["1X2", "BTTS", "OU1.5", "OU2.5", "HT_1X2", "HT_OU0.5", "HT_OU1.5"]
 MATCHES_PER_ROUND = 10
 
 MOBILE_USER_AGENT = (

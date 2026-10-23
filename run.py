@@ -2,10 +2,12 @@
 import argparse
 import sys
 
-from config import BASE_DIR, DB_PATH, ROUNDS_PER_SEASON
+from config import BASE_DIR, DB_PATH, PREMIER_COMPETITION_ID, ROUNDS_PER_SEASON
 from db.archive import archive_if_needed, merge_archives_if_needed
 from db.connection import get_connection
 from db.storage import pack
+from track.leagues import collect_leagues
+from scraper import zoom_api
 from db.upsert import (
     archive_missing_seasons,
     find_season_by_results,
@@ -46,6 +48,104 @@ DEFAULT_MODELS = ["baseline"]
 
 
 def cmd_scrape(args):
+    """Premier results + upcoming fixtures/odds. Uses bet9ja's JSON APIs
+    (scraper/zoom_api.py); falls back to the browser scraper if they fail."""
+    if not getattr(args, "browser", False):
+        try:
+            _scrape_via_api()
+            return
+        except Exception as e:  # noqa: BLE001 -- any API problem: fall back, don't lose the cycle
+            print(f"\n!!! API scrape failed ({type(e).__name__}: {e}) -- falling back to the browser scraper\n")
+    _scrape_via_browser(args)
+
+
+def _scrape_via_api():
+    summary = {"seasons_seen": 0, "new_seasons": 0, "seasons_archived": 0, "new_rounds": 0,
+               "new_matches": 0, "fixtures_seen": 0, "fixtures_new": 0, "odds_captured": 0}
+    comps = zoom_api.competitions()
+    premier = comps[PREMIER_COMPETITION_ID]
+    seasons = {prev: zoom_api.season_results(PREMIER_COMPETITION_ID, premier["teams"], previous=prev)
+               for prev in (True, False)}
+    groups = zoom_api.league_groups()
+    events = zoom_api.upcoming_events(groups[premier["name"]])
+    odds = {e["ext_match_id"]: zoom_api.event_odds(e["event_id"]) for e in events}
+
+    with get_connection() as conn:
+        print("=== Results via API (Premier-Zoom) ===")
+        touched, season_id_for = [], {}
+        for prev, season in seasons.items():
+            rounds = season["rounds"]
+            if not rounds:
+                continue
+            summary["seasons_seen"] += 1
+            if 1 not in rounds:
+                print(f"   {'previous' if prev else 'current'} season: no Round 1 -- skipped")
+                continue
+            fingerprint = compute_fingerprint(rounds[1])
+            is_new = conn.execute("SELECT 1 FROM seasons WHERE fingerprint = ?", (fingerprint,)).fetchone() is None
+            season_id = get_or_create_season(conn, fingerprint, len(rounds))
+            touched.append(season_id)
+            season_id_for[prev] = season_id
+            summary["new_seasons"] += is_new
+            print(f"   {'previous' if prev else 'current'} season -> season_id={season_id}"
+                  f"{' (new)' if is_new else ''}, {len(rounds)} rounds")
+            for round_number, matches in rounds.items():
+                for m in matches:
+                    m["round_number"] = round_number
+                    m["played_at"] = season["round_times"].get(round_number)
+                inserted = upsert_matches(conn, season_id, matches)
+                if inserted:
+                    summary["new_rounds"] += 1
+                    summary["new_matches"] += inserted
+
+        archived = archive_missing_seasons(conn, touched)
+        summary["seasons_archived"] = len(archived)
+
+        print("\n=== Upcoming fixtures + odds via API (Premier-Zoom) ===")
+        cur = seasons[False]
+        ref = cur if cur["first_id"] else seasons[True]        # new season with no results yet
+        scrape_ts = now_iso()
+        batch_min = min((e["ext_match_id"] for e in events), default=0)
+        for e in events:
+            place = zoom_api.place_in_season(e["ext_match_id"], cur["first_id"], cur["games_per_round"],
+                                             ROUNDS_PER_SEASON)
+            if place is not None:
+                (round_number, match_number), season_id = place, season_id_for.get(False)
+            else:
+                # Past the current season's range: a new season's game, whose
+                # season isn't known until its Round 1 finishes. (Its result
+                # still joins exactly, by ext_match_id.)
+                gpr = ref["games_per_round"] or 10
+                round_number = 1
+                match_number = (e["ext_match_id"] - batch_min) % gpr + 1
+                season_id = None
+            summary["fixtures_seen"] += 1
+            fixture_id, was_new = upsert_fixture(
+                conn, season_id=season_id, round_number=round_number, match_number=match_number,
+                team_a=e["team_a"], team_b=e["team_b"], kickoff_time=e["kickoff_time"],
+                scraped_at=scrape_ts, ext_match_id=e["ext_match_id"],
+            )
+            summary["fixtures_new"] += was_new
+            for market, selections in odds[e["ext_match_id"]].items():
+                for selection, price in selections.items():
+                    if price and insert_odds(conn, fixture_id, market, selection, price, round(1.0 / price, 4)):
+                        summary["odds_captured"] += 1
+
+    print("\n=== Scrape summary (API) ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
+def cmd_leagues(args):
+    """Collect every Zoom league's results and upcoming odds into the lg_*
+    tables, for analysis only (see db/schema.py)."""
+    summary = collect_leagues()
+    print("=== Other leagues (analysis data) ===")
+    for k, v in summary.items():
+        print(f"  {k}: {v}")
+
+
+def _scrape_via_browser(args):
     driver = build_driver(headless=not args.headed)
     summary = {
         "seasons_seen": 0,
@@ -281,6 +381,11 @@ def cmd_cycle(args):
     dashboard -> notify -> pack. What the GitHub Actions run calls."""
     cmd_scrape(args)
     print()
+    try:
+        cmd_leagues(args)              # analysis-only; must never break the Premier cycle
+    except Exception as e:  # noqa: BLE001
+        print(f"!!! other-leagues collection failed ({type(e).__name__}: {e}) -- continuing")
+    print()
     cmd_features(args)
     print()
     cmd_predict(args)
@@ -302,6 +407,7 @@ def main():
 
     scrape_p = sub.add_parser("scrape", help="Scrape results + fixtures/odds into SQLite")
     scrape_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
+    scrape_p.add_argument("--browser", action="store_true", help="Use the old browser scraper instead of the APIs")
     scrape_p.set_defaults(func=cmd_scrape)
 
     features_p = sub.add_parser("features", help="Build leakage-safe features for all seasons")
@@ -333,6 +439,9 @@ def main():
 
     cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> archive -> dashboard -> pack")
     cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
+    cycle_p.add_argument("--browser", action="store_true", help="Use the old browser scraper instead of the APIs")
+    leagues_p = sub.add_parser("leagues", help="Collect all Zoom leagues' results + odds (analysis only)")
+    leagues_p.set_defaults(func=cmd_leagues)
     cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=DEFAULT_MODELS)
     cycle_p.set_defaults(func=cmd_cycle)
 

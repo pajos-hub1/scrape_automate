@@ -177,6 +177,45 @@ CREATE TABLE IF NOT EXISTS notifications (
 -- Outcome of the most recent notify attempt (one row), so a failing or
 -- unconfigured Telegram setup can be diagnosed from the committed DB
 -- without access to the Actions logs. Never contains the token.
+-- Other Zoom leagues (and Premier, for comparison), collected straight from
+-- the JSON APIs (scraper/zoom_api.py) for analysis only -- nothing here
+-- feeds predictions, betslips or Telegram. Keyed by bet9ja's own matchId.
+CREATE TABLE IF NOT EXISTS lg_matches (
+    ext_match_id    INTEGER PRIMARY KEY,
+    competition_id  INTEGER NOT NULL,
+    league          TEXT NOT NULL,
+    season_first_id INTEGER NOT NULL,   -- first matchId of the season's Round 1: season identity
+    round_number    INTEGER NOT NULL,
+    match_number    INTEGER NOT NULL,
+    team_a          TEXT NOT NULL,
+    team_b          TEXT NOT NULL,
+    ft_a INTEGER, ft_b INTEGER, ht_a INTEGER, ht_b INTEGER,
+    round_time      TEXT,
+    scraped_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lg_matches_season ON lg_matches(competition_id, season_first_id, round_number);
+
+-- Upcoming games seen on the sportsbook, and their odds (captured once:
+-- Zoom odds never move after posting). Only the markets analysed.
+CREATE TABLE IF NOT EXISTS lg_events (
+    ext_match_id    INTEGER PRIMARY KEY,
+    competition_id  INTEGER NOT NULL,
+    league          TEXT NOT NULL,
+    event_id        INTEGER NOT NULL,
+    team_a          TEXT NOT NULL,
+    team_b          TEXT NOT NULL,
+    kickoff_time    TEXT,
+    first_seen      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lg_odds (
+    ext_match_id    INTEGER NOT NULL,
+    market          TEXT NOT NULL,
+    selection       TEXT NOT NULL,
+    price           REAL NOT NULL,
+    captured_at     TEXT NOT NULL,
+    PRIMARY KEY (ext_match_id, market, selection)
+);
+
 CREATE TABLE IF NOT EXISTS notify_status (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     at        TEXT NOT NULL,
@@ -205,6 +244,13 @@ def _migrate(conn):
     for col, coltype in FEATURES_MIGRATION_COLUMNS.items():
         if col not in existing:
             conn.execute(f"ALTER TABLE features ADD COLUMN {col} {coltype}")
+    # bet9ja's own matchId on fixtures and matches (2026-10-23, API scraping):
+    # lets reconcile join a prediction to its result exactly by id.
+    for table in ("fixtures", "matches"):
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "ext_match_id" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN ext_match_id INTEGER")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ext ON {table}(ext_match_id)")
 
 
 def init_db(conn):

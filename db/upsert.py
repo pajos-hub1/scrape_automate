@@ -110,6 +110,13 @@ def upsert_matches(conn, season_id, matches):
         )
         if cur.rowcount:
             inserted += 1
+        if m.get("ext_match_id") is not None:
+            # Rows first stored by the browser scraper have no bet9ja id yet.
+            conn.execute(
+                """UPDATE matches SET ext_match_id = ?
+                   WHERE season_id = ? AND round_number = ? AND match_number = ? AND ext_match_id IS NULL""",
+                (m["ext_match_id"], season_id, m["round_number"], m["match_number"]),
+            )
     return inserted
 
 
@@ -149,7 +156,8 @@ def make_fixture_key(round_number, match_number, team_a, team_b):
     return f"{round_number}:{match_number}:{team_a}:{team_b}"
 
 
-def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, kickoff_time=None, scraped_at=None):
+def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, kickoff_time=None, scraped_at=None,
+                   ext_match_id=None):
     """Returns (fixture_id, was_new). Idempotent on fixture_key
     (round/match/teams) -- season_id may be resolved later than the
     fixture itself is first seen, so a second scrape can attach it without
@@ -171,14 +179,35 @@ def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, 
     # older row belongs to an earlier season: start a fresh one under a
     # distinct key. (Before 2026-10-23 such rows were reused -- 160 fixtures
     # ended up shared by two seasons' games.)
-    row = conn.execute(
-        """SELECT fixture_id, fixture_key, scraped_at FROM fixtures
-           WHERE fixture_key = ? OR fixture_key LIKE ?
-           ORDER BY scraped_at DESC LIMIT 1""",
-        (base_key, base_key + "@%"),
-    ).fetchone()
-    if row is not None and not _within_hours(row["scraped_at"], ts, FIXTURE_REUSE_HOURS):
-        row = None
+    row = None
+    if ext_match_id is not None:
+        # bet9ja's own id identifies the game exactly -- no guessing needed.
+        row = conn.execute(
+            "SELECT fixture_id, fixture_key, scraped_at FROM fixtures WHERE ext_match_id = ?", (ext_match_id,)
+        ).fetchone()
+        if row is None:
+            # First API sight of a game the browser scraper already stored:
+            # adopt that row (same round + teams, recently polled) rather
+            # than duplicate it -- its slot number may differ, since the
+            # browser numbered slots in page order and the API in id order.
+            cand = conn.execute(
+                """SELECT fixture_id, fixture_key, scraped_at FROM fixtures
+                   WHERE ext_match_id IS NULL AND round_number = ? AND team_a = ? AND team_b = ?
+                   ORDER BY scraped_at DESC LIMIT 1""",
+                (round_number, team_a, team_b),
+            ).fetchone()
+            if cand is not None and _within_hours(cand["scraped_at"], ts, FIXTURE_REUSE_HOURS):
+                row = cand
+                conn.execute("UPDATE fixtures SET match_number = ? WHERE fixture_id = ?", (match_number, row["fixture_id"]))
+    if row is None:
+        row = conn.execute(
+            """SELECT fixture_id, fixture_key, scraped_at FROM fixtures
+               WHERE fixture_key = ? OR fixture_key LIKE ?
+               ORDER BY scraped_at DESC LIMIT 1""",
+            (base_key, base_key + "@%"),
+        ).fetchone()
+        if row is not None and not _within_hours(row["scraped_at"], ts, FIXTURE_REUSE_HOURS):
+            row = None
     key = base_key
     if row is None and conn.execute("SELECT 1 FROM fixtures WHERE fixture_key = ?", (base_key,)).fetchone():
         key = f"{base_key}@{ts}"
@@ -187,18 +216,19 @@ def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, 
         cur = conn.execute(
             """INSERT INTO fixtures
                (season_id, round_number, match_number, team_a, team_b,
-                kickoff_time, scraped_at, fixture_key)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (season_id, round_number, match_number, team_a, team_b, kickoff_time, ts, key),
+                kickoff_time, scraped_at, fixture_key, ext_match_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (season_id, round_number, match_number, team_a, team_b, kickoff_time, ts, key, ext_match_id),
         )
         return cur.lastrowid, True
 
     fixture_id = row["fixture_id"]
     conn.execute(
         """UPDATE fixtures SET season_id = COALESCE(?, season_id),
-           kickoff_time = COALESCE(?, kickoff_time), scraped_at = ?
+           kickoff_time = COALESCE(?, kickoff_time), scraped_at = ?,
+           ext_match_id = COALESCE(?, ext_match_id)
            WHERE fixture_id = ?""",
-        (season_id, kickoff_time, ts, fixture_id),
+        (season_id, kickoff_time, ts, ext_match_id, fixture_id),
     )
     return fixture_id, False
 
