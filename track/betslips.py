@@ -240,7 +240,7 @@ def _candidates(fixture_id, preds, prices, labels):
     return out
 
 
-def build_slips(rounds, score=SCORE):
+def build_slips(rounds, score=SCORE, plan_fn=None):
     """Walks rounds in order, building each round's slips from history
     learned on earlier rounds only, then folding that round's results into
     history. score: "combined" (default), or "odds"/"model" for comparison.
@@ -262,7 +262,9 @@ def build_slips(rounds, score=SCORE):
                         scored[market] = leg       # best selection of this market for this game
             scored_games[gid] = scored
 
-        plan = plan_for(rnd.get("season"))
+        # plan_fn: another league's own staking plan (track/league_slips.py);
+        # default is Premier's season-numbered PLANS.
+        plan = (plan_fn or plan_for)(rnd.get("season"))
         slips, short = [], []
         for market in MARKETS:
             legs = [g[market] for g in scored_games.values() if market in g]

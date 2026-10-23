@@ -66,6 +66,10 @@ def collect_leagues():
                         )
                         summary["odds_rows"] += 1
             conn.commit()
+
+        # Freeze this hour's merged cross-league tickets (track/league_slips.py).
+        from track.league_slips import MERGED_LEAGUES, build_league, create_merged
+        summary["merged_created"] = len(create_merged(conn, {c: build_league(conn, c) for c in MERGED_LEAGUES}))
     if not summary["skipped"]:
         summary.pop("skipped")
     return summary

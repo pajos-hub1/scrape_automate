@@ -34,6 +34,7 @@ def test_each_message_sent_once_and_failures_retried(env, monkeypatch):
     built = [_entry("settled", [_slip("OU1.5 top 5", 5, 5, True)]),
              _entry("upcoming", [_slip("OU1.5 top 5", 0, 5, None)], key=None, label="Round 7 (upcoming)")]
     monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", False)
+    monkeypatch.setattr(notify_mod, "LEAGUE_MESSAGES", False)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
@@ -105,6 +106,7 @@ def _upcoming(price, number=14):
 
 def _run(env, monkeypatch, built, outbox):
     monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", False)
+    monkeypatch.setattr(notify_mod, "LEAGUE_MESSAGES", False)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
@@ -218,6 +220,7 @@ def test_one_chat_failing_does_not_block_the_other(env, monkeypatch):
 
 def _run_chats(env, monkeypatch, built, sender, chats, recalc_before="2000-01-01", weekly_cuts=False):
     monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", weekly_cuts)
+    monkeypatch.setattr(notify_mod, "LEAGUE_MESSAGES", False)
     monkeypatch.setattr(notify_mod, "RECALC_BEFORE", recalc_before)   # tests must not depend on the clock
     monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: built)
     monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])

@@ -216,6 +216,22 @@ CREATE TABLE IF NOT EXISTS lg_odds (
     PRIMARY KEY (ext_match_id, market, selection)
 );
 
+-- Other-league paper tickets (track/league_slips.py): small settings
+-- (e.g. the season each league's money starts after) and the merged
+-- cross-league tickets, frozen when created so they can't drift.
+CREATE TABLE IF NOT EXISTS lg_settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lg_merged (
+    ticket_key  TEXT PRIMARY KEY,      -- "<hour>|<market>|<k>"
+    hour        TEXT NOT NULL,
+    market      TEXT NOT NULL,
+    per_league  INTEGER NOT NULL,      -- top 1 or top 2 from each league
+    legs        TEXT NOT NULL,         -- JSON list of picks
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS notify_status (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     at        TEXT NOT NULL,

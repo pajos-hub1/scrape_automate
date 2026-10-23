@@ -24,6 +24,7 @@ import urllib.request
 from db.upsert import now_iso
 from config import ROUNDS_PER_SEASON
 from track.cuts import cut_stats, verdict as cut_verdict
+from track.league_notify import league_messages
 from track.betslips import (_all_kinds, build_slips, load_rounds, played, played_kinds, round_stake, stake_for,
                             season_totals, summarize)
 
@@ -119,6 +120,7 @@ def format_recalc(season, entries, totals):
 
 
 WEEKLY_CUTS = True
+LEAGUE_MESSAGES = True
 
 
 def _cut_line(r):
@@ -299,6 +301,14 @@ def pending_messages(conn, built=None, suffix=""):
             current = list(seasons)[-1]
             out.append((key, format_cut_check(current, seasons[current]["rounds"],
                                               cut_stats(built, season=current), cut_stats(built))))
+
+    # Other leagues + merged tickets: combined messages (track/league_notify.py),
+    # only for chats already receiving Premier's.
+    if LEAGUE_MESSAGES and "hello" in sent:
+        try:
+            out.extend(league_messages(sent))
+        except Exception as e:  # noqa: BLE001 -- never let them break Premier's messages
+            print(f"   (other-league messages skipped: {type(e).__name__}: {e})")
 
     upcoming = [e for e in built if e["round"]["status"] == "upcoming" and e["slips"]]
     if upcoming:

@@ -660,6 +660,16 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 </section>
 
 <section>
+  <h2>Other leagues &amp; merged tickets (paper)</h2>
+  <p class="section-note">Liga, Bundes, Serie A, Ligue 1, Primeira and Eredivisie each get Premier's 3 tickets
+  (1X2, HT O/U 0.5, BTTS top 5, ₦500 each); each league's money starts from ₦0 at its next season.
+  Merged tickets take the strongest 1 or 2 picks per market from every league's next round (including
+  Premier) into one ticket, created once an hour. Expected from Premier's history: merged top 1 about
+  &minus;31%, merged top 2 about &minus;52% &mdash; every pick adds bet9ja's ~5% cut.</p>
+  {leagues_html}
+</section>
+
+<section>
   <h2>Cut tracker: are "sure" picks losing more than the odds say?</h2>
   <p class="section-note">Checks the suspicion that the bookmaker makes low-odds favourites lose more often
   than their prices imply. Every number is compared with what Bet9ja's own odds predicted (margin removed).
@@ -794,6 +804,70 @@ def _render_cuts_section(built):
             f'<th>Season {current}</th><th>All seasons</th></tr></thead><tbody>{body}</tbody></table></div>')
 
 
+def _render_leagues_section(conn):
+    """Other leagues' paper tickets + merged cross-league tickets
+    (track/league_slips.py)."""
+    from track.league_slips import (FLAGS, LEAGUES, build_league, league_totals, merged_name, merged_tickets,
+                                    start_after)
+    rows = []
+    for cid, name in LEAGUES.items():
+        b = build_league(conn, cid)
+        after = start_after(conn, cid)
+        totals = league_totals(b)
+        staked = {s: t for s, t in totals.items() if after is not None and s > after}
+        nxt = next((html.escape(e["round"]["label"]) for e in reversed(b) if e["round"]["status"] == "upcoming"), "&mdash;")
+        if staked:
+            t = {k: sum(x[k] for x in staked.values()) for k in ("rounds", "slips", "won", "staked", "returned", "profit")}
+            status = "staked (season from ₦0)"
+            money = (f'<td>{t["won"]}/{t["slips"]}</td><td>{_naira(t["staked"])}</td>'
+                     f'<td class="{"hit" if t["profit"] > 0 else "miss"}">{fmt_naira(t["profit"])}</td>')
+        else:
+            status = "tracking only &mdash; money starts next season"
+            money = "<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>"
+        rows.append(f"<tr><td>{FLAGS[cid]} {html.escape(name)}</td><td>{status}</td><td>{nxt}</td>{money}</tr>")
+    league_table = ('<div class="table-scroll"><table><thead><tr><th>League</th><th>Status</th><th>Next round</th>'
+                    '<th>Tickets won</th><th>Staked</th><th>Profit</th></tr></thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></div>')
+
+    merged = merged_tickets(conn)
+    by_type = {}
+    for t in merged:
+        x = by_type.setdefault(merged_name(t), {"n": 0, "settled": 0, "won": 0, "staked": 0.0, "returned": 0.0})
+        x["n"] += 1
+        if t["settled"]:
+            x["settled"] += 1
+            x["won"] += bool(t["won"])
+            x["staked"] += t["stake"]
+            x["returned"] += t["returned"]
+    def _merged_row(n, x):
+        still_open = x["n"] - x["settled"]
+        won = f'{x["won"]}/{x["settled"]}' + (f" (+{still_open} open)" if still_open else "")
+        profit = x["returned"] - x["staked"]
+        return (f'<tr><td>{html.escape(n)}</td><td>{won}</td><td>{_naira(x["staked"])}</td>'
+                f'<td>{_naira(x["returned"])}</td><td class="{"hit" if profit > 0 else "miss"}">{fmt_naira(profit)}</td></tr>')
+
+    mrows = "".join(_merged_row(n, x) for n, x in sorted(by_type.items()))
+    merged_table = ('<div class="table-scroll"><table><thead><tr><th>Merged ticket</th><th>Won</th><th>Staked</th>'
+                    '<th>Returned</th><th>Profit</th></tr></thead>'
+                    f'<tbody>{mrows or "<tr><td colspan=5>None yet</td></tr>"}</tbody></table></div>')
+    latest = [t for t in merged if t["hour"] == max((m["hour"] for m in merged), default=None)]
+    latest_html = "".join(
+        f'<div class="slip"><div class="slip-head"><strong>{html.escape(merged_name(t))}</strong> '
+        f'<span class="conf">{len(t["legs"])} picks &middot; odds {t["odds"]:,.2f} &middot; stake {_naira(t["stake"])} &middot; </span>'
+        + (f'<span class="hit">WON {_naira(t["returned"])}</span>' if t["won"] else
+           f'<span class="miss">LOST</span> ({t["legs_won"]}/{len(t["legs"])})' if t["settled"] else
+           f'pending &middot; pays {_naira(t["stake"] * t["odds"])}')
+        + '</div><div class="table-scroll"><table><tbody>'
+        + "".join(f'<tr><td>{FLAGS.get(l["league"], "")}</td><td class="teams">{html.escape(l["teams"][0])} <span class="vs">vs</span> '
+                  f'{html.escape(l["teams"][1])}</td><td>{html.escape(l["selection"])}</td><td>{l["price"]:.2f}</td>'
+                  f'<td class="{"hit" if l["won"] else "miss" if l["won"] is False else ""}">'
+                  f'{"&#10003;" if l["won"] else "&#10007;" if l["won"] is False else "pending"}</td></tr>' for l in t["legs"])
+        + "</tbody></table></div></div>" for t in latest)
+    return "".join([league_table, "<h3>Merged tickets (best picks across all 7 leagues, ₦500 each)</h3>", merged_table,
+                    f"<h3>Latest merged tickets{(' &mdash; ' + latest[0]['hour'][11:13] + ':00 UTC') if latest else ''}</h3>",
+                    latest_html or '<p class="empty">None yet.</p>'])
+
+
 def build_dashboard(conn, out_path=OUT_PATH):
     built = build_slips(load_rounds(conn))
     # Heading shows the staking plan of the season being played right now.
@@ -822,6 +896,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         health_html=_render_health_section(get_health(conn)),
         betslips_html=_render_betslips_section(built),
         cuts_html=_render_cuts_section(built),
+        leagues_html=_render_leagues_section(conn),
         stake_naira=STAKE_NAIRA,
         stake_breakdown=", ".join(
             f"{SLIP_MARKET_LABELS.get(k.split()[0], k)}{' ' + ' '.join(k.split()[1:]) if k.split()[0] in SLIP_MARKET_LABELS else ''}"
