@@ -3,6 +3,7 @@ DB state. Re-run every cycle (see run.py cmd_dashboard / cmd_cycle) so the
 GitHub Pages copy always reflects the latest scrape/predict/track pass.
 """
 import html
+import re
 from pathlib import Path
 
 from config import BASE_DIR, DASHBOARD_MODELS, DASHBOARD_SEASONS, ROUNDS_PER_SEASON
@@ -102,7 +103,8 @@ def _render_probability_section(conn, models):
             f'<tbody>{"".join(rows)}</tbody></table></div>')
 
 
-SLIP_BROWSER_ROUNDS = 30
+SLIP_BROWSER_ROUNDS = 15      # was 30; with every tracking-only slip shown it was half the page (2026-10-23)
+ROUND_BROWSER_ROUNDS = 10     # was 20
 
 SLIP_MARKET_LABELS = {"1X2": "1X2", "OU1.5": "O/U 1.5", "HT_OU0.5": "HT O/U 0.5", "BTTS": "BTTS",
                       "HT_OU1.5": "HT O/U 1.5", "OU2.5": "O/U 2.5"}
@@ -254,7 +256,7 @@ def _render_betslips_section(built):
                      f'round result {fmt_naira(result)}')
         active = " active" if i == len(shown) - 1 else ""
         panels.append(f'<div class="slip-panel{active}" data-label="{html.escape(label)}">'
-                      + "".join(_render_slip(s) for s in e["slips"]) + "</div>")
+                      + "".join(_render_slip(s) for s in played(e["slips"])) + "</div>")   # staked slips only
     nav = ""
     if panels:
         nav = ('<div class="round-nav">'
@@ -894,7 +896,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
     # seasons -- all-time, they're 700+ points squeezed into one chart.
     # Tiles, per-model charts and the ROI table stay all-time.
     season_ids = get_recent_season_ids(conn, DASHBOARD_SEASONS)
-    history = get_round_history(conn)
+    history = get_round_history(conn, max_reconciled=ROUND_BROWSER_ROUNDS)
 
     html_out = PAGE_TEMPLATE.format(
         generated_at=meta["generated_at"],
@@ -920,7 +922,68 @@ def build_dashboard(conn, out_path=OUT_PATH):
         profit_trend_html=cumulative_profit_chart(get_profit_trend(conn, season_ids)),
     )
 
+    html_out = _phone_friendly(html_out)
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_out, encoding="utf-8")
     return out_path
+
+
+# Sections: (title prefix, short menu name, open by default). Long or rarely
+# needed sections start collapsed so the page is short on a phone.
+SECTIONS = [
+    ("Pipeline health", "Health", True),
+    ("Paper betslips", "Betslips", True),
+    ("Other leagues", "Leagues", True),
+    ("Cut tracker", "Cut tracker", False),
+    ("Accuracy by market:", "Models", False),
+    ("Accuracy by market", "Accuracy", False),
+    ("Round browser", "Rounds", False),
+    ("Return on a flat", "Returns", False),
+    ("Probability quality", "Log-loss", False),
+    ("Accuracy trend", "Trends", False),
+]
+
+
+def _phone_friendly(page):
+    """Wrap every section in a tap-to-open <details> and add a sticky menu
+    of links to them (2026-10-23: the page had grown to ~1 MB, 10 long
+    sections)."""
+    links = []
+
+    def wrap(m):
+        title = m.group(1)
+        plain = re.sub(r"<[^>]+>", "", html.unescape(title))
+        short, is_open = next(((n, o) for prefix, n, o in SECTIONS if plain.startswith(prefix)), (plain[:14], False))
+        sid = "s-" + re.sub(r"[^a-z]+", "-", short.lower()).strip("-")
+        links.append((sid, short))
+        return (f'<section id="{sid}"><details{" open" if is_open else ""}>'
+                f'<summary><h2>{title}</h2></summary>')
+
+    page = re.sub(r"<section>\s*<h2>(.*?)</h2>", wrap, page)
+    page = page.replace("</section>", "</details></section>")
+    nav = '<nav class="topnav">' + "".join(f'<a href="#{sid}">{html.escape(n)}</a>' for sid, n in links) + "</nav>"
+    page = page.replace("</header>", "</header>\n" + nav, 1)
+    css = """
+.topnav { position: sticky; top: 0; z-index: 5; display: flex; gap: 6px; overflow-x: auto; padding: 8px 0;
+  margin-bottom: 12px; background: var(--page); -webkit-overflow-scrolling: touch; }
+.topnav a { flex: none; padding: 5px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface-1); color: var(--text-primary); text-decoration: none; font-size: 0.8rem; }
+details > summary { cursor: pointer; list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary h2 { display: inline; }
+details > summary h2::before { content: "▸ "; color: var(--text-muted); }
+details[open] > summary h2::before { content: "▾ "; }
+section { scroll-margin-top: 56px; }
+"""
+    page = page.replace("</style>", css + "</style>", 1)
+    js = """<script>
+document.querySelectorAll('.topnav a').forEach(function(a) {
+  a.addEventListener('click', function() {
+    var d = document.querySelector(a.getAttribute('href') + ' > details');
+    if (d) d.open = true;
+  });
+});
+</script>
+"""
+    return page.replace("</body>", js + "</body>", 1)

@@ -29,14 +29,17 @@ def collect_leagues():
                     continue
                 for round_number, matches in season["rounds"].items():
                     for m in matches:
+                        # all_lg_matches includes archived seasons: the API still
+                        # returns the previous season, which may already be archived.
                         cur = conn.execute(
-                            """INSERT OR IGNORE INTO lg_matches
+                            """INSERT INTO lg_matches
                                (ext_match_id, competition_id, league, season_first_id, round_number, match_number,
                                 team_a, team_b, ft_a, ft_b, ht_a, ht_b, round_time, scraped_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                               SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                               WHERE NOT EXISTS (SELECT 1 FROM all_lg_matches WHERE ext_match_id = ?)""",
                             (m["ext_match_id"], cid, name, season["first_id"], round_number, m["match_number"],
                              m["team_a"], m["team_b"], m["ft_a"], m["ft_b"], m["ht_a"], m["ht_b"],
-                             season["round_times"].get(round_number), ts),
+                             season["round_times"].get(round_number), ts, m["ext_match_id"]),
                         )
                         summary["new_results"] += cur.rowcount
 
@@ -46,13 +49,15 @@ def collect_leagues():
                 continue
             for e in zoom_api.upcoming_events(group):
                 cur = conn.execute(
-                    """INSERT OR IGNORE INTO lg_events
+                    """INSERT INTO lg_events
                        (ext_match_id, competition_id, league, event_id, team_a, team_b, kickoff_time, first_seen)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (e["ext_match_id"], cid, name, e["event_id"], e["team_a"], e["team_b"], e["kickoff_time"], ts),
+                       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                       WHERE NOT EXISTS (SELECT 1 FROM all_lg_events WHERE ext_match_id = ?)""",
+                    (e["ext_match_id"], cid, name, e["event_id"], e["team_a"], e["team_b"], e["kickoff_time"], ts,
+                     e["ext_match_id"]),
                 )
                 summary["new_events"] += cur.rowcount
-                have = conn.execute("SELECT 1 FROM lg_odds WHERE ext_match_id = ? LIMIT 1", (e["ext_match_id"],)).fetchone()
+                have = conn.execute("SELECT 1 FROM all_lg_odds WHERE ext_match_id = ? LIMIT 1", (e["ext_match_id"],)).fetchone()
                 if have:
                     continue
                 for market, selections in zoom_api.event_odds(e["event_id"]).items():

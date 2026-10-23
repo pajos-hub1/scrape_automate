@@ -49,12 +49,13 @@ def load_league_rounds(conn, cid, now=None):
     now = now or datetime.now(timezone.utc)
     name = MERGED_LEAGUES.get(cid, f"#{cid}")
     odds = defaultdict(lambda: defaultdict(dict))
-    for r in conn.execute("""SELECT o.ext_match_id, o.market, o.selection, o.price FROM lg_odds o
-                             JOIN lg_events e ON e.ext_match_id = o.ext_match_id WHERE e.competition_id = ?""", (cid,)):
+    # all_lg_*: live rows + archived finished seasons (db/archive.py).
+    for r in conn.execute("""SELECT o.ext_match_id, o.market, o.selection, o.price FROM all_lg_odds o
+                             JOIN all_lg_events e ON e.ext_match_id = o.ext_match_id WHERE e.competition_id = ?""", (cid,)):
         odds[r["ext_match_id"]][r["market"]][r["selection"]] = r["price"]
 
     season_ids = [r[0] for r in conn.execute(
-        "SELECT DISTINCT season_first_id FROM lg_matches WHERE competition_id = ? ORDER BY 1", (cid,))]
+        "SELECT DISTINCT season_first_id FROM all_lg_matches WHERE competition_id = ? ORDER BY 1", (cid,))]
     season_no = {sid: i for i, sid in enumerate(season_ids, start=1)}
 
     def candidates(ext_id, labels):
@@ -77,7 +78,7 @@ def load_league_rounds(conn, cid, now=None):
         return out
 
     rounds = {}
-    for m in conn.execute("""SELECT * FROM lg_matches WHERE competition_id = ? ORDER BY season_first_id, round_number""", (cid,)):
+    for m in conn.execute("""SELECT * FROM all_lg_matches WHERE competition_id = ? ORDER BY season_first_id, round_number""", (cid,)):
         if m["ext_match_id"] not in odds:
             continue
         key = (m["season_first_id"], m["round_number"])
@@ -92,11 +93,11 @@ def load_league_rounds(conn, cid, now=None):
     out = [rounds[k] for k in sorted(rounds)]
 
     # Games without a result yet: place them in their round by matchId.
-    cur = conn.execute("""SELECT season_first_id, COUNT(*) AS n FROM lg_matches
+    cur = conn.execute("""SELECT season_first_id, COUNT(*) AS n FROM all_lg_matches
                           WHERE competition_id = ? AND round_number = 1 GROUP BY 1 ORDER BY 1 DESC LIMIT 1""",
                        (cid,)).fetchone()
     pending = {}
-    for e in conn.execute("""SELECT e.* FROM lg_events e LEFT JOIN lg_matches m ON m.ext_match_id = e.ext_match_id
+    for e in conn.execute("""SELECT e.* FROM all_lg_events e LEFT JOIN all_lg_matches m ON m.ext_match_id = e.ext_match_id
                              WHERE e.competition_id = ? AND m.ext_match_id IS NULL ORDER BY e.ext_match_id""", (cid,)):
         place = place_in_season(e["ext_match_id"], cur["season_first_id"], cur["n"],
                                 _rounds_per_season(cur["n"])) if cur else None
@@ -228,7 +229,7 @@ def merged_tickets(conn):
     if ids:
         marks = ",".join("?" for _ in ids)
         results = {r["ext_match_id"]: dict(r) for r in conn.execute(
-            f"SELECT ext_match_id, ft_a, ft_b, ht_a, ht_b FROM lg_matches WHERE ext_match_id IN ({marks})", list(ids))}
+            f"SELECT ext_match_id, ft_a, ft_b, ht_a, ht_b FROM all_lg_matches WHERE ext_match_id IN ({marks})", list(ids))}
     out = []
     for r in rows:
         legs = json.loads(r["legs"])

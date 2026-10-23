@@ -28,7 +28,9 @@ from datetime import datetime, timedelta, timezone
 from config import ARCHIVE_DIR, ARCHIVE_KEEP_DAYS, ARCHIVE_TRIGGER_MB
 from db.storage import ensure_unpacked, pack
 
-ARCHIVED_TABLES = ["odds", "predictions", "prediction_results"]
+ARCHIVED_TABLES = ["odds", "predictions", "prediction_results",
+                   # other-league analysis data (2026-10-23): finished seasons only
+                   "lg_matches", "lg_events", "lg_odds"]
 
 # SQLite's default compile-time cap on attached databases (Python's bundled
 # build keeps the default). Hitting it means it's time to merge archives.
@@ -124,9 +126,22 @@ def archive_if_needed(conn, force=False):
         (cutoff,),
     )
 
+    # Other leagues: games from a league's finished seasons (any season
+    # before its newest one), scraped before the cutoff.
+    conn.execute("DROP TABLE IF EXISTS temp.arc_lg_ids")
+    conn.execute(
+        """CREATE TEMP TABLE arc_lg_ids AS
+           SELECT m.ext_match_id FROM main.lg_matches m
+           WHERE m.scraped_at < ?
+             AND m.season_first_id < (SELECT MAX(season_first_id) FROM main.lg_matches x
+                                      WHERE x.competition_id = m.competition_id)""",
+        (cutoff,),
+    )
+
     n_pred = conn.execute("SELECT COUNT(*) FROM temp.arc_pred_ids").fetchone()[0]
     n_fix = conn.execute("SELECT COUNT(*) FROM temp.arc_fixture_ids").fetchone()[0]
-    if n_pred == 0 and n_fix == 0:
+    n_lg = conn.execute("SELECT COUNT(*) FROM temp.arc_lg_ids").fetchone()[0]
+    if n_pred == 0 and n_fix == 0 and n_lg == 0:
         summary["note"] = "nothing old enough to archive"
         return summary
 
@@ -155,6 +170,12 @@ def archive_if_needed(conn, force=False):
         conn.execute("CREATE INDEX arc_new.idx_arc_pr ON prediction_results(prediction_id)")
         conn.execute("CREATE INDEX arc_new.idx_arc_pr_match ON prediction_results(match_ref)")
         conn.execute("CREATE INDEX arc_new.idx_arc_odds ON odds(fixture_id, market, selection)")
+        for table in ("lg_matches", "lg_events", "lg_odds"):
+            conn.execute(f"CREATE TABLE arc_new.{table} AS SELECT * FROM main.{table} "
+                         "WHERE ext_match_id IN (SELECT ext_match_id FROM temp.arc_lg_ids)")
+        conn.execute("CREATE INDEX arc_new.idx_arc_lg_matches ON lg_matches(ext_match_id)")
+        conn.execute("CREATE INDEX arc_new.idx_arc_lg_events ON lg_events(ext_match_id)")
+        conn.execute("CREATE INDEX arc_new.idx_arc_lg_odds ON lg_odds(ext_match_id)")
 
         # Children before parents (prediction_results -> predictions FK).
         conn.execute(
@@ -168,6 +189,8 @@ def archive_if_needed(conn, force=False):
         conn.execute(
             "DELETE FROM main.odds WHERE fixture_id IN (SELECT fixture_id FROM temp.arc_fixture_ids)"
         )
+        for table in ("lg_odds", "lg_events", "lg_matches"):
+            conn.execute(f"DELETE FROM main.{table} WHERE ext_match_id IN (SELECT ext_match_id FROM temp.arc_lg_ids)")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -185,6 +208,7 @@ def archive_if_needed(conn, force=False):
         "archive_file": path.name,
         "predictions_moved": n_pred,
         "odds_fixtures_moved": n_fix,
+        "league_games_moved": n_lg,
         "size_after_mb": round(db_size_mb(conn), 1),
     })
     return summary
@@ -229,19 +253,25 @@ def merge_archives_if_needed(force=False, db_path=None):
                 if have:
                     exprs = [c if c in have else f"NULL AS {c}" for c in cols]
                     selects.append(f"SELECT {', '.join(exprs)} FROM src{i}.{table}")
+            if not selects:
+                continue          # no archive has this table yet (e.g. lg_* in pre-2026-10-23 archives)
             conn.execute(f"CREATE TABLE main.{table} AS " + " UNION ALL ".join(selects))
+        merged_tables = {r[0] for r in conn.execute("SELECT name FROM main.sqlite_master WHERE type = 'table'")}
         conn.execute("CREATE INDEX idx_arc_pred ON predictions(prediction_id)")
         conn.execute("CREATE INDEX idx_arc_pred_fixture ON predictions(fixture_ref)")
         conn.execute("CREATE INDEX idx_arc_pr ON prediction_results(prediction_id)")
         conn.execute("CREATE INDEX idx_arc_pr_match ON prediction_results(match_ref)")
         conn.execute("CREATE INDEX idx_arc_odds ON odds(fixture_id, market, selection)")
+        for table in ("lg_matches", "lg_events", "lg_odds"):
+            if table in merged_tables:
+                conn.execute(f"CREATE INDEX idx_arc_{table} ON {table}(ext_match_id)")
         conn.commit()
 
         expected = {t: sum(conn.execute(f"SELECT COUNT(*) FROM src{i}.{t}").fetchone()[0]
                            for i in range(len(dbs))
                            if conn.execute(f"PRAGMA src{i}.table_info({t})").fetchone())
-                    for t in ARCHIVED_TABLES}
-        got = {t: conn.execute(f"SELECT COUNT(*) FROM main.{t}").fetchone()[0] for t in ARCHIVED_TABLES}
+                    for t in ARCHIVED_TABLES if t in merged_tables}
+        got = {t: conn.execute(f"SELECT COUNT(*) FROM main.{t}").fetchone()[0] for t in ARCHIVED_TABLES if t in merged_tables}
         if got != expected:
             raise RuntimeError(f"archive merge row counts don't match: {got} vs {expected}")
         for i in range(len(dbs)):
