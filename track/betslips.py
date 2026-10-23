@@ -262,9 +262,9 @@ def build_slips(rounds, score=SCORE, plan_fn=None):
                         scored[market] = leg       # best selection of this market for this game
             scored_games[gid] = scored
 
-        # plan_fn: another league's own staking plan (track/league_slips.py);
-        # default is Premier's season-numbered PLANS.
-        plan = (plan_fn or plan_for)(rnd.get("season"))
+        # plan_fn(round): another league's own staking plan
+        # (track/league_slips.py); default is Premier's season-numbered PLANS.
+        plan = plan_fn(rnd) if plan_fn else plan_for(rnd.get("season"))
         slips, short = [], []
         for market in MARKETS:
             legs = [g[market] for g in scored_games.values() if market in g]

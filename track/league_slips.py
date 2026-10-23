@@ -3,14 +3,15 @@ tickets -- built from the lg_* tables (track/leagues.py collects them).
 
 Per league (Liga, Bundes, Serie A, Ligue 1, Primeira, Eredivisie): the
 same 3 tickets as Premier -- 1X2, HT Over/Under 0.5 and BTTS top 5, ₦500
-each, ranked by chance exactly like Premier (track/betslips.py). A league's
-money starts from ₦0 at its NEXT season after these tickets were switched
-on (2026-10-23); until then its tickets are tracking only.
+each, ranked by chance exactly like Premier (track/betslips.py). Money is
+counted per league season (from ₦0), staked since these tickets were switched
+on (2026-10-23) -- from each league's round that was upcoming at switch-on;
+earlier rounds are tracking only.
 
 Merged (all 7 leagues incl. Premier, staked from the start): for each of
 the 3 markets, the strongest 1 or 2 picks from every league's upcoming
-round in one ticket -- 6 tickets, ₦500 each, created at most once an hour
-and frozen in lg_merged so later data can't change them.
+round in one ticket -- 6 tickets, ₦500 each, one set per Premier round,
+frozen in lg_merged so later data can't change them.
 
 Expected (analysis 2026-10-23, from Premier's real top picks): merged top 1
 about -31%, merged top 2 about -52% -- each pick adds bet9ja's ~5% cut.
@@ -26,6 +27,8 @@ from track.betslips import build_slips, played
 from track.reconcile import actual_labels
 
 LEAGUES = {2: "Liga", 3: "Bundes", 4: "Serie A", 5: "Ligue 1", 6: "Primeira", 7: "Eredivisie"}
+FULL_NAMES = {1: "PREMIER (ENGLAND)", 2: "LIGA (SPAIN)", 3: "BUNDESLIGA (GERMANY)", 4: "SERIE A (ITALY)",
+              5: "LIGUE 1 (FRANCE)", 6: "PRIMEIRA (PORTUGAL)", 7: "EREDIVISIE (NETHERLANDS)"}
 MERGED_LEAGUES = {1: "Premier", **LEAGUES}
 FLAGS = {1: "🏴󠁧󠁢󠁥󠁮󠁧󠁿", 2: "🇪🇸", 3: "🇩🇪", 4: "🇮🇹", 5: "🇫🇷", 6: "🇵🇹", 7: "🇳🇱"}
 LEAGUE_PLAN = {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 500}
@@ -80,7 +83,8 @@ def load_league_rounds(conn, cid, now=None):
         key = (m["season_first_id"], m["round_number"])
         rnd = rounds.setdefault(key, {
             "key": key, "season": m["season_first_id"], "number": m["round_number"], "league": cid,
-            "label": f"{name} S{season_no[m['season_first_id']]} R{m['round_number']}", "status": "settled",
+            "label": f"S{season_no[m['season_first_id']]} R{m['round_number']}", "status": "settled",
+            "season_no": season_no[m["season_first_id"]],
             "sort": f"{m['season_first_id']:012d}-{m['round_number']:02d}", "games": {}})
         labels = actual_labels({"ft_a": m["ft_a"], "ft_b": m["ft_b"], "ht_a": m["ht_a"], "ht_b": m["ht_b"]})
         rnd["games"][m["ext_match_id"]] = {"teams": (m["team_a"], m["team_b"]),
@@ -104,7 +108,8 @@ def load_league_rounds(conn, cid, now=None):
         key = (season, number)
         rnd = pending.setdefault(key, {
             "key": None, "season": season, "number": number, "league": cid, "kickoff": e["kickoff_time"],
-            "label": f"{name} R{number}" + ("" if season else " (new season)"),
+            "label": (f"S{season_no.get(season, len(season_no))} R{number}" if season else f"New season R{number}"),
+            "season_no": season_no.get(season, len(season_no) + 1),
             "status": "upcoming" if kickoff > now else "playing",
             "sort": f"{season or 10**12 - 1:012d}-{number:02d}", "games": {}})
         rnd["games"][e["ext_match_id"]] = {"teams": (e["team_a"], e["team_b"]), "markets": candidates(e["ext_match_id"], None)}
@@ -114,24 +119,38 @@ def load_league_rounds(conn, cid, now=None):
     return out
 
 
-def start_after(conn, cid):
-    """The season (first matchId) a league's money starts AFTER -- the
-    season current when tickets were switched on. Recorded once."""
-    key = f"start_after:{cid}"
+def start_from(conn, cid, rounds):
+    """(season first matchId, round) a league's money starts at: its
+    upcoming round when staking was switched on (user's choice
+    2026-10-23: start right away, not at the next season). Recorded once."""
+    key = f"start_from:{cid}"
     row = conn.execute("SELECT value FROM lg_settings WHERE key = ?", (key,)).fetchone()
     if row:
-        return int(row["value"])
-    cur = conn.execute("SELECT MAX(season_first_id) FROM lg_matches WHERE competition_id = ?", (cid,)).fetchone()[0]
-    if cur is None:
-        return None
-    conn.execute("INSERT INTO lg_settings (key, value) VALUES (?, ?)", (key, str(cur)))
-    return cur
+        season, number = row["value"].split(":")
+        return int(season), int(number)
+    up = [r for r in rounds if r["status"] == "upcoming" and r["season"] is not None]
+    if not up:
+        return None             # e.g. right at a season change: record it on a later run
+    season, number = up[-1]["season"], up[-1]["number"]
+    conn.execute("INSERT INTO lg_settings (key, value) VALUES (?, ?)", (key, f"{season}:{number}"))
+    return season, number
 
 
-def build_league(conn, cid):
-    after = start_after(conn, cid)
-    plan_fn = lambda season: LEAGUE_PLAN if (after is not None and (season is None or season > after)) else {}
-    return build_slips(load_league_rounds(conn, cid), plan_fn=plan_fn)
+def staked_round(rnd, start):
+    """Is this round on or after the league's start point?"""
+    if start is None:
+        return False
+    s0, n0 = start
+    season = rnd.get("season")
+    if season is None:
+        return True                                  # a newer season than the start
+    return season > s0 or (season == s0 and rnd["number"] >= n0)
+
+
+def build_league(conn, cid, now=None):
+    rounds = load_league_rounds(conn, cid, now=now)
+    start = start_from(conn, cid, rounds)
+    return build_slips(rounds, plan_fn=lambda rnd: LEAGUE_PLAN if staked_round(rnd, start) else {})
 
 
 def league_totals(built):

@@ -11,7 +11,7 @@ import html
 from collections import defaultdict
 
 from track.betslips import played
-from track.league_slips import FLAGS, LEAGUES, build_league, league_totals, merged_tickets
+from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, league_totals, merged_tickets
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
 MERGED_ORDER = ["1X2", "HT_OU0.5", "BTTS"]
@@ -57,38 +57,31 @@ def league_messages(sent, connect=None):
         built = {cid: build_league(conn, cid) for cid in LEAGUES}
         merged = merged_tickets(conn)
 
-    new_blocks, new_keys, res_lines, res_keys = [], [], [], []
+    from track.notify import format_result, format_upcoming      # lazy: notify imports this module
+    out = []
     for cid, b in built.items():
-        flag, totals = FLAGS[cid], league_totals(b)
+        name, totals = FULL_NAMES[cid], league_totals(b)
+        parts, keys = [], []
         for e in b:
-            slips = {s["name"]: s for s in played(e["slips"]) if s["name"] in TICKETS}
-            if not slips:
-                continue                                    # tracking only (before the league's next season)
+            if not played(e["slips"]):
+                continue                                    # before the league's start point: tracking only
             r = e["round"]
-            if r["status"] == "upcoming":
-                key = f"lgslips:{cid}:{r['season'] or 'new'}:{r['number']}"
-                if key not in sent:
-                    kick = (r.get("kickoff") or "")[11:16]
-                    parts = [f"{flag} <b>{html.escape(r['label'])}</b>" + (f" · kick-off {kick} UTC" if kick else "")]
-                    for n in TICKETS:
-                        if n in slips:
-                            s, market = slips[n], n.replace(" top 5", "")
-                            parts.append(_ticket_block(f"{TICKET_TITLE[market]} · top 5", s["odds"], s["stake"],
-                                                       s["legs"], market))
-                    new_blocks.append("\n\n".join(parts))
-                    new_keys.append(key)
-            elif r["status"] == "settled":
+            if r["status"] == "settled":
                 key = f"lgres:{cid}:{r['season']}:{r['number']}"
                 if key not in sent:
-                    net = sum(s["returned"] - s["stake"] for s in slips.values())
-                    season = totals.get(r["season"], {}).get("profit", 0.0)
-                    lines = [f"{flag} <b>{html.escape(r['label'])}</b>"]
-                    lines += [_result_line(TICKET_TITLE[n.replace(" top 5", "")], s["won"], s["returned"],
-                                           s["legs_won"], len(s["legs"])) for n, s in slips.items()]
-                    lines.append(f"Round {_naira(net, sign=True)} · season so far <b>{_naira(season, sign=True)}</b>")
-                    res_lines.append("\n".join(lines))
-                    res_keys.append(key)
+                    parts.append(format_result(e, totals.get(r["season"]), league=name,
+                                               season_name=f"{LEAGUES[cid]} season {r['season_no']}"))
+                    keys.append(key)
+            elif r["status"] == "upcoming":
+                key = f"lgslips:{cid}:{r['season'] or 'new'}:{r['number']}"
+                if key not in sent:
+                    parts.append(format_upcoming(e, league=name))
+                    keys.append(key)
+        if parts:                                           # one message per league, like Premier's
+            out.append((f"lgmsg:{cid}:" + _digest(keys), "\n\n\n".join(parts)))
+            out += [(k, None) for k in keys]
 
+    new_blocks, new_keys, res_lines, res_keys = [], [], [], []
     by_hour = defaultdict(list)
     for t in merged:
         by_hour[t["hour"]].append(t)
@@ -114,13 +107,12 @@ def league_messages(sent, connect=None):
             res_lines.append("\n".join(lines))
             res_keys.append(key_res)
 
-    out = []
     if new_blocks:
         out.append(("lgbatch:new:" + _digest(new_keys),
-                    "📥 <b>New slips — other leagues</b> (paper)\n\n" + "\n\n\n".join(new_blocks)))
+                    "📥 <b>New merged tickets</b> (paper)\n\n" + "\n\n\n".join(new_blocks)))
         out += [(k, None) for k in new_keys]
     if res_lines:
-        out.append(("lgbatch:res:" + _digest(res_keys), "📊 <b>Results — other leagues</b>\n\n" + "\n\n".join(res_lines)))
+        out.append(("lgbatch:res:" + _digest(res_keys), "📊 <b>Merged ticket results</b>\n\n" + "\n\n".join(res_lines)))
         out += [(k, None) for k in res_keys]
     return out
 

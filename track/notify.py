@@ -50,11 +50,20 @@ def _slip_title(slip):
     return name.replace("-game", "-game slip")
 
 
-def format_upcoming(entry, updated=False):
+PREMIER_NAME = "PREMIER (ENGLAND)"
+
+
+def _title(entry, league):
+    """League name in capitals first, so every message says which league."""
+    return f"{league} · {entry['round']['label']}"
+
+
+def format_upcoming(entry, updated=False, league=PREMIER_NAME):
     slips = played(entry["slips"])
-    head = (f"🔄 <b>Updated: {html.escape(entry['round']['label'])} slips changed</b> "
+    title = html.escape(_title(entry, league))
+    head = (f"🔄 <b>Updated: {title} slips changed</b> "
             f"(these replace the earlier ones)\n" if updated else "")
-    lines = [head + f"🎟 <b>{html.escape(entry['round']['label'])}: {len(slips)} paper slips (upcoming)</b>",
+    lines = [head + f"🎟 <b>{title}: {len(slips)} paper slips (upcoming)</b>",
              f"{_naira(sum(s['stake'] for s in slips))} total", ""]
     for slip in slips:
         lines.append(f"<b>{html.escape(_slip_title(slip))}</b> (stake {_naira(slip['stake'])}): odds "
@@ -67,12 +76,12 @@ def format_upcoming(entry, updated=False):
     return "\n".join(lines).strip()
 
 
-def format_result(entry, season_total=None):
+def format_result(entry, season_total=None, league=PREMIER_NAME, season_name=None):
     slips = played(entry["slips"])
     won = [s for s in slips if s["won"]]
     result = sum(s["returned"] - s["stake"] for s in slips)
     icon = "✅" if result > 0 else "❌"
-    lines = [f"{icon} <b>{html.escape(entry['round']['label'])} result: {len(won)}/{len(slips)} slips won, "
+    lines = [f"{icon} <b>{html.escape(_title(entry, league))} result: {len(won)}/{len(slips)} slips won, "
              f"{_naira(result, sign=True)}</b>", ""]
     for slip in slips:
         if slip["won"]:
@@ -81,8 +90,8 @@ def format_result(entry, season_total=None):
             lines.append(f"❌ {html.escape(_slip_title(slip))} ({slip['legs_won']}/{len(slip['legs'])} picks) "
                          f"−{_naira(slip['stake'])}")
     if season_total is not None:
-        season = entry["round"].get("season")
-        lines += ["", f"Season {season} so far ({season_total['rounds']} rounds, from ₦0): "
+        season = season_name or f"Season {entry['round'].get('season')}"
+        lines += ["", f"{season} so far ({season_total['rounds']} rounds, from ₦0): "
                       f"<b>{_naira(season_total['profit'], sign=True)}</b>"]
         if season_total.get("by_legs"):
             parts = [f"top {n}: {_naira(p, sign=True)}" for n, p in sorted(season_total["by_legs"].items(), reverse=True)]

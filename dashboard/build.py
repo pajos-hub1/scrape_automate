@@ -662,7 +662,7 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
 <section>
   <h2>Other leagues &amp; merged tickets (paper)</h2>
   <p class="section-note">Liga, Bundes, Serie A, Ligue 1, Primeira and Eredivisie each get Premier's 3 tickets
-  (1X2, HT O/U 0.5, BTTS top 5, ₦500 each); each league's money starts from ₦0 at its next season.
+  (1X2, HT O/U 0.5, BTTS top 5, ₦500 each), staked from 2026-10-23; each league's money is per season, from ₦0.
   Merged tickets take the strongest 1 or 2 picks per market from every league's next round (including
   Premier) into one ticket &mdash; a new set each Premier round, each league round used once. Expected from Premier's history: merged top 1 about
   &minus;31%, merged top 2 about &minus;52% &mdash; every pick adds bet9ja's ~5% cut.</p>
@@ -807,22 +807,19 @@ def _render_cuts_section(built):
 def _render_leagues_section(conn):
     """Other leagues' paper tickets + merged cross-league tickets
     (track/league_slips.py)."""
-    from track.league_slips import (FLAGS, LEAGUES, build_league, league_totals, merged_name, merged_tickets,
-                                    start_after)
+    from track.league_slips import FLAGS, LEAGUES, build_league, league_totals, merged_name, merged_tickets
     rows = []
     for cid, name in LEAGUES.items():
         b = build_league(conn, cid)
-        after = start_after(conn, cid)
-        totals = league_totals(b)
-        staked = {s: t for s, t in totals.items() if after is not None and s > after}
+        staked = league_totals(b)
         nxt = next((html.escape(e["round"]["label"]) for e in reversed(b) if e["round"]["status"] == "upcoming"), "&mdash;")
         if staked:
             t = {k: sum(x[k] for x in staked.values()) for k in ("rounds", "slips", "won", "staked", "returned", "profit")}
-            status = "staked (season from ₦0)"
+            status = f"staked &middot; {t['rounds']} round(s) settled"
             money = (f'<td>{t["won"]}/{t["slips"]}</td><td>{_naira(t["staked"])}</td>'
                      f'<td class="{"hit" if t["profit"] > 0 else "miss"}">{fmt_naira(t["profit"])}</td>')
         else:
-            status = "tracking only &mdash; money starts next season"
+            status = "staked &middot; first round still to finish"
             money = "<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>"
         rows.append(f"<tr><td>{FLAGS[cid]} {html.escape(name)}</td><td>{status}</td><td>{nxt}</td>{money}</tr>")
     league_table = ('<div class="table-scroll"><table><thead><tr><th>League</th><th>Status</th><th>Next round</th>'

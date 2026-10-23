@@ -38,17 +38,20 @@ def _upcoming(conn, cid, first_id, round_no, gpr=10):
                 conn.execute("INSERT INTO lg_odds VALUES (?, ?, ?, ?, 'c')", (ext, m, sel, p))
 
 
-def test_money_starts_at_the_next_season(env):
+def test_money_starts_at_the_round_upcoming_at_switch_on(env):
     with get_connection(env[0]) as conn:
         _add_season(conn, 2, 1000, rounds=3)
-        built = ls.build_league(conn, 2)                         # records start_after = season 1000
-        assert built and not any(s["played"] for e in built for s in e["slips"])
-        _add_season(conn, 2, 5000, rounds=2)                     # the next season
-        built = ls.build_league(conn, 2)
-        staked = [e for e in built if any(s["played"] for s in e["slips"])]
-        assert {e["round"]["season"] for e in staked} == {5000}
-        assert sorted(s["name"] for s in ls.played(staked[0]["slips"])) == ["1X2 top 5", "BTTS top 5", "HT_OU0.5 top 5"]
-        assert ls.league_totals(built)[5000]["slips"] == 6
+        _upcoming(conn, 2, 1000, 4)
+        built = ls.build_league(conn, 2, now=NOW)                # records start = season 1000, round 4
+        settled = [e for e in built if e["round"]["status"] == "settled"]
+        assert settled and not any(s["played"] for e in settled for s in e["slips"])   # history: tracking only
+        up = [e for e in built if e["round"]["status"] == "upcoming"][-1]
+        assert sorted(s["name"] for s in ls.played(up["slips"])) == ["1X2 top 5", "BTTS top 5", "HT_OU0.5 top 5"]
+        for k in range(10):                                      # round 4 finishes
+            conn.execute("INSERT INTO lg_matches VALUES (?, 2, 'x', 1000, 4, ?, 'a', 'b', 2, 1, 1, 0, 't', 's')",
+                         (1030 + k, k + 1))
+        totals = ls.league_totals(ls.build_league(conn, 2, now=NOW))
+        assert totals[1000]["rounds"] == 1 and totals[1000]["slips"] == 3 and totals[1000]["staked"] == 1500
 
 
 def test_merged_tickets_once_per_round_and_settled_from_results(env):
