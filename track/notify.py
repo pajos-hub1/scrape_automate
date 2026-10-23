@@ -141,6 +141,20 @@ def format_cut_check(season, rounds, season_rows, all_rows):
     return "\n".join(lines)
 
 
+def format_catchup(entries):
+    first, last = entries[0]["round"]["label"], entries[-1]["round"]["label"]
+    lines = [f"📋 <b>Missed results: {html.escape(first)} – {html.escape(last)}</b>",
+             "These rounds settled late (a season-tracking fault, now fixed):", ""]
+    for e in entries:
+        slips = played(e["slips"])
+        won = [s for s in slips if s["won"]]
+        result = sum(s["returned"] - s["stake"] for s in slips)
+        detail = ", ".join(_slip_title(s) for s in won) if won else "none"
+        lines.append(f"{'✅' if result > 0 else '❌'} {html.escape(e['round']['label'])}: {len(won)}/{len(slips)} won, "
+                     f"{_naira(result, sign=True)} (won: {html.escape(detail)})")
+    return "\n".join(lines)
+
+
 def format_season_summary(season, totals, by_type):
     """End-of-season report: that season's own money, starting from ₦0."""
     icon = "🏆" if totals["profit"] > 0 else "📉"
@@ -233,9 +247,21 @@ def pending_messages(conn, built=None, suffix=""):
     settled = [e for e in built if e["round"]["status"] == "settled" and e["slips"]]
     if settled:
         last = settled[-1]
-        key = f"result:{last['round']['key'][0]}-{last['round']['key'][1]}"
+        rkey = lambda e: f"result:{e['round']['key'][0]}-{e['round']['key'][1]}"
+        key = rkey(last)
         if key not in sent:
-            totals = season_totals(built).get(last["round"].get("season"))
+            season = last["round"].get("season")
+            totals = season_totals(built).get(season)
+            # Several rounds settled since the last result message (e.g. a
+            # backlog cleared after a fix): one catch-up message for the
+            # missed rounds, then the full message for the latest one.
+            same = [e for e in settled if e["round"].get("season") == season]
+            last_sent = max((e["round"]["key"][1] for e in same if rkey(e) in sent), default=None)
+            missed = [e for e in same[:-1] if rkey(e) not in sent
+                      and (last_sent is None or e["round"]["key"][1] > last_sent)]
+            if last_sent is not None and missed:
+                out.append((f"catchup:{key[7:]}", format_catchup(missed)))
+                out.extend((rkey(e), None) for e in missed)        # mark them as sent
             out.append((key, format_result(last, totals)))
 
     # Season summary, sent once, only when a season ends NOW: the current

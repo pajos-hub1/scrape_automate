@@ -27,7 +27,11 @@ def get_or_create_season(conn, fingerprint, round_count):
     demote a season that's already been confirmed complete back to
     'current'. round_count itself never regresses for the same reason.
     'archived' is handled separately in run.py, once a season stops
-    appearing in a scrape at all.
+    appearing in a scrape at all -- and a season seen again is un-archived:
+    being seen means it's on the site. (Before 2026-10-23 'archived' was
+    sticky; one scrape that couldn't read the current season's Round 1 got
+    it archived for good, leaving no 'current' season, untagged fixtures,
+    and ~10 rounds of predictions that never reconciled.)
     """
     ts = now_iso()
     row = conn.execute(
@@ -46,7 +50,7 @@ def get_or_create_season(conn, fingerprint, round_count):
 
     season_id = row["season_id"]
     effective_round_count = max(round_count, row["round_count"])
-    status = row["status"] if row["status"] == "archived" else _status_for_round_count(effective_round_count)
+    status = _status_for_round_count(effective_round_count)
     conn.execute(
         """UPDATE seasons SET status = ?, last_seen = ?, round_count = ?
            WHERE season_id = ?""",
@@ -109,6 +113,38 @@ def upsert_matches(conn, season_id, matches):
     return inserted
 
 
+FIXTURE_REUSE_HOURS = 6
+
+
+def _within_hours(earlier, later, hours):
+    a, b = datetime.fromisoformat(earlier), datetime.fromisoformat(later)
+    return abs((b - a).total_seconds()) <= hours * 3600
+
+
+def find_season_by_results(conn, rounds):
+    """Identify an already-known season from any stored round's results
+    (round, slot, teams AND score must all match), for scrape passes whose
+    Round 1 couldn't be read and so can't be fingerprinted. Returns the
+    season_id most of the matching results belong to, or None."""
+    votes = {}
+    for round_number, matches in rounds.items():
+        for i, m in enumerate(matches, start=1):
+            if m.get("ft_a") is None:
+                continue
+            for r in conn.execute(
+                """SELECT season_id FROM matches WHERE round_number = ? AND match_number = ?
+                   AND team_a = ? AND team_b = ? AND ft_a = ? AND ft_b = ?""",
+                (round_number, m.get("match_number", i), m["team_a"], m["team_b"], m["ft_a"], m["ft_b"]),
+            ):
+                votes[r["season_id"]] = votes.get(r["season_id"], 0) + 1
+    if not votes:
+        return None
+    best = max(votes, key=votes.get)
+    # A whole round of identical results is overwhelming evidence; a single
+    # coincidental score match across seasons is not.
+    return best if votes[best] >= 5 else None
+
+
 def make_fixture_key(round_number, match_number, team_a, team_b):
     return f"{round_number}:{match_number}:{team_a}:{team_b}"
 
@@ -128,11 +164,24 @@ def upsert_fixture(conn, season_id, round_number, match_number, team_a, team_b, 
     same-poll fixtures drift apart by however long the upsert loop takes.
     """
     ts = scraped_at or now_iso()
-    key = make_fixture_key(round_number, match_number, team_a, team_b)
+    base_key = make_fixture_key(round_number, match_number, team_a, team_b)
 
+    # The same round/slot/teams recurs in later seasons, so only reuse a row
+    # re-polled recently (the live batch is re-polled every ~15 min). An
+    # older row belongs to an earlier season: start a fresh one under a
+    # distinct key. (Before 2026-10-23 such rows were reused -- 160 fixtures
+    # ended up shared by two seasons' games.)
     row = conn.execute(
-        "SELECT fixture_id FROM fixtures WHERE fixture_key = ?", (key,)
+        """SELECT fixture_id, fixture_key, scraped_at FROM fixtures
+           WHERE fixture_key = ? OR fixture_key LIKE ?
+           ORDER BY scraped_at DESC LIMIT 1""",
+        (base_key, base_key + "@%"),
     ).fetchone()
+    if row is not None and not _within_hours(row["scraped_at"], ts, FIXTURE_REUSE_HOURS):
+        row = None
+    key = base_key
+    if row is None and conn.execute("SELECT 1 FROM fixtures WHERE fixture_key = ?", (base_key,)).fetchone():
+        key = f"{base_key}@{ts}"
 
     if row is None:
         cur = conn.execute(

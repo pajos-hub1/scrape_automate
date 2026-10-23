@@ -121,7 +121,7 @@ def _find_match(conn, cache, season_id, team_a, team_b):
     key = (season_id, team_a, team_b)
     if key not in cache:
         m = conn.execute(
-            """SELECT match_id, ft_a, ft_b, ht_a, ht_b FROM matches
+            """SELECT match_id, ft_a, ft_b, ht_a, ht_b, scraped_at FROM matches
                WHERE season_id = ? AND team_a = ? AND team_b = ?""",
             key,
         ).fetchone()
@@ -149,7 +149,10 @@ def _find_match_across_seasons(conn, cache, season_id, team_a, team_b, fixture_s
     """
     if season_id is not None:
         match = _find_match(conn, cache, season_id, team_a, team_b)
-        if match is not None:
+        # Time check: a fixture's result is scraped AFTER the fixture itself.
+        # A match from long before means the fixture was mis-tagged with an
+        # old season (e.g. a reused fixture row) -- not its real game.
+        if match is not None and not _before(match["scraped_at"], fixture_scraped_at, RESULT_LEAD_HOURS):
             return match
 
     newer_seasons = conn.execute(
@@ -163,7 +166,30 @@ def _find_match_across_seasons(conn, cache, season_id, team_a, team_b, fixture_s
         if match is not None:
             return match
 
-    return None
+    # Last resort for untagged / mis-tagged fixtures: the same pairing whose
+    # result appeared shortly after this fixture was scraped.
+    from datetime import datetime, timedelta
+    ref = datetime.fromisoformat(fixture_scraped_at)
+    lo = (ref - timedelta(hours=RESULT_LEAD_HOURS)).isoformat(timespec="seconds")   # same format as stored
+    hi = (ref + timedelta(hours=RESULT_WINDOW_HOURS)).isoformat(timespec="seconds")
+    m = conn.execute(
+        """SELECT match_id, ft_a, ft_b, ht_a, ht_b, scraped_at FROM matches
+           WHERE team_a = ? AND team_b = ? AND ft_a IS NOT NULL
+             AND scraped_at >= ? AND scraped_at <= ?
+           ORDER BY scraped_at ASC LIMIT 1""",
+        (team_a, team_b, lo, hi),
+    ).fetchone()
+    return dict(m) if m else None
+
+
+RESULT_LEAD_HOURS = 2      # tolerance: result scraped up to this long before the fixture's last poll
+RESULT_WINDOW_HOURS = 12   # a round's result appears within hours of its fixtures
+
+
+def _before(ts, ref, hours):
+    """True if ts is more than `hours` before ref."""
+    from datetime import datetime, timedelta
+    return datetime.fromisoformat(ts) < datetime.fromisoformat(ref) - timedelta(hours=hours)
 
 
 def reconcile(conn):

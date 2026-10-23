@@ -311,3 +311,19 @@ def test_weekly_cut_check_sent_once_per_week(env, monkeypatch):
     assert len(checks) == 1 and "Season 32" in checks[0]
     _run_chats(env, monkeypatch, built, sender, ["me"], weekly_cuts=True)
     assert len([t for t in got if "Weekly cut check" in t]) == 1               # once per week
+
+
+def test_backlog_sends_one_catchup_then_latest_result(env, monkeypatch):
+    built = [_settled(33, r, r == 20) for r in range(17, 22)]
+    got = []
+    sender = lambda text, chat_id: got.append(text)
+    with get_connection(env[0]) as conn:
+        for k in ("hello", "result:33-17"):
+            conn.execute("INSERT INTO notifications (key, sent_at) VALUES (?, '2026-10-23T00:00:00+00:00')", (k,))
+    r = _run_chats(env, monkeypatch, built, sender, ["me"])
+    catchups = [t for t in got if "Missed results" in t]
+    assert len(catchups) == 1 and "S33 R18" in catchups[0] and "S33 R20" in catchups[0] and "S33 R21" not in catchups[0]
+    assert any("S33 R21 result" in t for t in got)
+    got.clear()
+    _run_chats(env, monkeypatch, built, sender, ["me"])
+    assert got == []                                          # nothing repeated

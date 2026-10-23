@@ -8,6 +8,7 @@ from db.connection import get_connection
 from db.storage import pack
 from db.upsert import (
     archive_missing_seasons,
+    find_season_by_results,
     get_or_create_season,
     insert_odds,
     now_iso,
@@ -70,12 +71,21 @@ def cmd_scrape(args):
                 summary["seasons_seen"] += 1
 
                 round_1 = rounds.get(1)
-                if not round_1:
-                    print(f"   Skipping a season scrape with no Round 1 data "
-                          f"({round_count} rounds seen) -- can't fingerprint")
-                    continue
-
-                fingerprint = compute_fingerprint(round_1)
+                if round_1:
+                    fingerprint = compute_fingerprint(round_1)
+                else:
+                    # Round 1 couldn't be read this pass: recognise the season
+                    # from any round we've already stored instead. Skipping it
+                    # used to get the season archived as "gone" (2026-10-23).
+                    known = find_season_by_results(conn, rounds)
+                    if known is None:
+                        print(f"   Skipping a season scrape with no Round 1 data "
+                              f"({round_count} rounds seen) -- can't fingerprint or recognise it")
+                        continue
+                    fingerprint = conn.execute(
+                        "SELECT fingerprint FROM seasons WHERE season_id = ?", (known,)
+                    ).fetchone()["fingerprint"]
+                    print(f"   No Round 1 this pass -- recognised season_id={known} from stored results")
 
                 existing = conn.execute(
                     "SELECT season_id FROM seasons WHERE fingerprint = ?", (fingerprint,)
