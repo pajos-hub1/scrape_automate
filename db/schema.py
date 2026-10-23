@@ -224,8 +224,8 @@ CREATE TABLE IF NOT EXISTS lg_settings (
     value  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS lg_merged (
-    ticket_key  TEXT PRIMARY KEY,      -- "<hour>|<market>|<k>"
-    hour        TEXT NOT NULL,
+    ticket_key  TEXT PRIMARY KEY,      -- "<set>|<market>|<k>"
+    hour        TEXT NOT NULL,         -- the set: "P<season>R<round>" of Premier (hourly "YYYY-MM-DDTHH" before)
     market      TEXT NOT NULL,
     per_league  INTEGER NOT NULL,      -- top 1 or top 2 from each league
     legs        TEXT NOT NULL,         -- JSON list of picks
@@ -267,6 +267,9 @@ def _migrate(conn):
         if "ext_match_id" not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN ext_match_id INTEGER")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_ext ON {table}(ext_match_id)")
+    # Merged-ticket sets are per Premier round since 2026-10-23 (was hourly).
+    if "label" not in {row[1] for row in conn.execute("PRAGMA table_info(lg_merged)")}:
+        conn.execute("ALTER TABLE lg_merged ADD COLUMN label TEXT")
 
 
 def init_db(conn):

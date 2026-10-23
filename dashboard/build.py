@@ -664,7 +664,7 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
   <p class="section-note">Liga, Bundes, Serie A, Ligue 1, Primeira and Eredivisie each get Premier's 3 tickets
   (1X2, HT O/U 0.5, BTTS top 5, ₦500 each); each league's money starts from ₦0 at its next season.
   Merged tickets take the strongest 1 or 2 picks per market from every league's next round (including
-  Premier) into one ticket, created once an hour. Expected from Premier's history: merged top 1 about
+  Premier) into one ticket &mdash; a new set each Premier round, each league round used once. Expected from Premier's history: merged top 1 about
   &minus;31%, merged top 2 about &minus;52% &mdash; every pick adds bet9ja's ~5% cut.</p>
   {leagues_html}
 </section>
@@ -850,7 +850,7 @@ def _render_leagues_section(conn):
     merged_table = ('<div class="table-scroll"><table><thead><tr><th>Merged ticket</th><th>Won</th><th>Staked</th>'
                     '<th>Returned</th><th>Profit</th></tr></thead>'
                     f'<tbody>{mrows or "<tr><td colspan=5>None yet</td></tr>"}</tbody></table></div>')
-    latest = [t for t in merged if t["hour"] == max((m["hour"] for m in merged), default=None)]
+    latest = [t for t in merged if merged and t["hour"] == merged[-1]["hour"]]
     latest_html = "".join(
         f'<div class="slip"><div class="slip-head"><strong>{html.escape(merged_name(t))}</strong> '
         f'<span class="conf">{len(t["legs"])} picks &middot; odds {t["odds"]:,.2f} &middot; stake {_naira(t["stake"])} &middot; </span>'
@@ -864,7 +864,7 @@ def _render_leagues_section(conn):
                   f'{"&#10003;" if l["won"] else "&#10007;" if l["won"] is False else "pending"}</td></tr>' for l in t["legs"])
         + "</tbody></table></div></div>" for t in latest)
     return "".join([league_table, "<h3>Merged tickets (best picks across all 7 leagues, ₦500 each)</h3>", merged_table,
-                    f"<h3>Latest merged tickets{(' &mdash; ' + latest[0]['hour'][11:13] + ':00 UTC') if latest else ''}</h3>",
+                    f"<h3>Latest merged tickets{(' &mdash; ' + html.escape(latest[0]['label'])) if latest else ''}</h3>",
                     latest_html or '<p class="empty">None yet.</p>'])
 
 

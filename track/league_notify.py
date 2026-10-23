@@ -93,11 +93,11 @@ def league_messages(sent, connect=None):
     for t in merged:
         by_hour[t["hour"]].append(t)
     total_merged = sum(t["returned"] - t["stake"] for t in merged if t["settled"])
-    for hour, ts in sorted(by_hour.items()):
+    for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
         if key_new not in sent:
             n_leagues = len(ts[0]["legs"]) // ts[0]["k"]
-            parts = [f"🔗 <b>Merged tickets · {hour[11:13]}:00 UTC</b>\n"
+            parts = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>\n"
                      f"{len(ts)} tickets · ₦{ts[0]['stake']:,} each · best picks from {n_leagues} leagues"]
             for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"]))):
                 parts.append(_ticket_block(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["odds"], t["stake"],
@@ -106,11 +106,11 @@ def league_messages(sent, connect=None):
             new_keys.append(key_new)
         if key_res not in sent and all(t["settled"] for t in ts):
             net = sum(t["returned"] - t["stake"] for t in ts)
-            lines = [f"🔗 <b>Merged tickets · {hour[11:13]}:00 UTC</b>"]
+            lines = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>"]
             lines += [_result_line(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["won"], t["returned"],
                                    t["legs_won"], len(t["legs"]))
                       for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"])))]
-            lines.append(f"This hour {_naira(net, sign=True)} · all merged so far <b>{_naira(total_merged, sign=True)}</b>")
+            lines.append(f"This set {_naira(net, sign=True)} · all merged so far <b>{_naira(total_merged, sign=True)}</b>")
             res_lines.append("\n".join(lines))
             res_keys.append(key_res)
 

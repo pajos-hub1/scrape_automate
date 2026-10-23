@@ -158,17 +158,30 @@ def league_totals(built):
 # ---- merged tickets ---------------------------------------------------------
 
 def create_merged(conn, built_by_league, now=None):
-    """Once per hour: freeze the 6 merged tickets from every league's
-    upcoming round. Returns the keys created."""
+    """One set of 6 merged tickets per Premier round: when Premier's next
+    round first appears, take every league's next round at that moment.
+    All leagues play a round about every 100 minutes, so this uses each
+    league round once; a league whose round is already in an earlier set
+    is left out rather than bet twice. (Was once an hour until 2026-10-23,
+    which could reuse a round in two consecutive hours.) Returns the keys
+    created."""
     now = now or datetime.now(timezone.utc)
-    hour = now.strftime("%Y-%m-%dT%H")
-    if conn.execute("SELECT 1 FROM lg_merged WHERE hour = ? LIMIT 1", (hour,)).fetchone():
+    premier_up = [e for e in built_by_league.get(1, []) if e["round"]["status"] == "upcoming"]
+    if not premier_up:
         return []
+    anchor = premier_up[-1]["round"]
+    set_id = f"P{anchor['season'] or 'new'}R{anchor['number']}"
+    if conn.execute("SELECT 1 FROM lg_merged WHERE hour = ? LIMIT 1", (set_id,)).fetchone():
+        return []
+    kick = (anchor.get("kickoff") or "")[11:16]
+    label = f"Premier R{anchor['number']}" + (f" · from {kick} UTC" if kick else "")
+    used = {leg["ext_match_id"] for r in conn.execute(
+        "SELECT legs FROM lg_merged ORDER BY created_at DESC LIMIT 60") for leg in json.loads(r["legs"])}
     picks = defaultdict(list)            # market -> [(league, [legs sorted by score])]
     for cid, built in built_by_league.items():
         up = [e for e in built if e["round"]["status"] == "upcoming"]
-        if not up:
-            continue
+        if not up or used & set(up[-1]["round"]["games"]):
+            continue                     # no next round, or it's already in an earlier set
         for slip in up[-1]["slips"]:
             market = slip["name"].replace(" top 5", "")
             if market in MERGED_MARKETS and slip["name"].endswith(" top 5"):
@@ -181,16 +194,16 @@ def create_merged(conn, built_by_league, now=None):
             legs = [{"league": cid, "teams": list(l["teams"]), "market": market, "selection": l["selection"],
                      "price": l["price"], "odds_p": l["odds_p"], "ext_match_id": l["ext_match_id"]}
                     for cid, ls in picks[market] for l in ls[:k]]
-            key = f"{hour}|{market}|{k}"
-            conn.execute("INSERT OR IGNORE INTO lg_merged (ticket_key, hour, market, per_league, legs, created_at) "
-                         "VALUES (?, ?, ?, ?, ?, ?)", (key, hour, market, k, json.dumps(legs), now_iso()))
+            key = f"{set_id}|{market}|{k}"
+            conn.execute("INSERT OR IGNORE INTO lg_merged (ticket_key, hour, market, per_league, legs, created_at, label) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?)", (key, set_id, market, k, json.dumps(legs), now_iso(), label))
             created.append(key)
     return created
 
 
 def merged_tickets(conn):
     """Every merged ticket, settled where all its games have results."""
-    rows = conn.execute("SELECT * FROM lg_merged ORDER BY hour, market, per_league").fetchall()
+    rows = conn.execute("SELECT * FROM lg_merged ORDER BY created_at, market, per_league").fetchall()
     ids = {leg["ext_match_id"] for r in rows for leg in json.loads(r["legs"])}
     results = {}
     if ids:
@@ -206,7 +219,8 @@ def merged_tickets(conn):
         settled = all(l["won"] is not None for l in legs)
         won = settled and all(l["won"] for l in legs)
         odds = math.prod(l["price"] for l in legs)
-        out.append({"key": r["ticket_key"], "hour": r["hour"], "market": r["market"], "k": r["per_league"],
+        label = r["label"] or f"{r['hour'][11:13]}:00 UTC"     # sets made hourly before 2026-10-23 21:00
+        out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "market": r["market"], "k": r["per_league"],
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
                     "won": won if settled else None, "returned": MERGED_STAKE * odds if won else 0.0,
                     "legs_won": sum(1 for l in legs if l["won"])})
