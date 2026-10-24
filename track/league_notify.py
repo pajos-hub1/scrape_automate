@@ -16,6 +16,11 @@ from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_le
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
 MERGED_ORDER = ["1X2", "HT_OU0.5", "BTTS"]
+# Other leagues whose slips/results go to Telegram (user's choice 2026-10-24:
+# the three most profitable so far, alongside Premier). The rest are still
+# played on paper and shown on the dashboard; their messages are recorded
+# as sent without sending, so switching one on later doesn't replay a backlog.
+TELEGRAM_LEAGUES = {3, 2, 4}           # Bundesliga, Liga, Serie A
 
 
 def _naira(v, sign=False):
@@ -91,7 +96,9 @@ def league_messages(sent, connect=None, part="all"):
             parts.append(format_season_summary(season, t, summarize(b, season=season), league=name,
                                                season_name=f"Season {season_no}"))
             keys.append(key)
-        if parts:                                           # one message per league, like Premier's
+        if parts and cid not in TELEGRAM_LEAGUES:           # dashboard only
+            out += [(k, None) for k in keys]
+        elif parts:                                         # one message per league, like Premier's
             out.append((f"lgmsg:{cid}:" + _digest(keys), "\n\n\n".join(parts)))
             out += [(k, None) for k in keys]
 

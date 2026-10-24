@@ -157,6 +157,19 @@ def test_league_season_summary_only_after_the_last_round(env):
     assert summaries(ln.league_messages({"hello"} | {k for k, _ in msgs}, connect=connect)) == []   # once
 
 
+def test_only_chosen_leagues_go_to_telegram(env):
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        for cid in (3, 5):                                         # Bundesliga is sent, Ligue 1 isn't
+            _add_season(conn, cid, cid * 1000, rounds=1)
+            _upcoming(conn, cid, cid * 1000, 2)
+            ls.build_league(conn, cid, now=NOW)
+    msgs = ln.league_messages({"hello"}, connect=connect, part="leagues")
+    texts = [k for k, t in msgs if t]
+    assert len(texts) == 1 and texts[0].startswith("lgmsg:3:")
+    assert ("lgslips:5:5000:2", None) in msgs                      # recorded silently, no backlog later
+
+
 def test_league_comparison(env):
     import track.league_report as lr
     with get_connection(env[0]) as conn:
