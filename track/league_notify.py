@@ -77,7 +77,8 @@ def _result_line(title, won, returned, legs_won, n, stake):
 
 def merged_start(merged):
     """Name of the first set made with the bars -- where the merged total starts."""
-    return next((t["label"].split(" · ")[0] for t in merged if t["barred"]), None)
+    name = next((t["label"].split(" · ")[0] for t in merged if t["barred"]), None)
+    return name.replace("Premier ", "Merged ", 1) if name else None
 
 
 def _booking(conn, built, merged, sent, part):
