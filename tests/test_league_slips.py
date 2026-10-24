@@ -227,3 +227,32 @@ def test_merged_bars_filter_picks_and_skip_empty_tickets(env, monkeypatch):
                if x and "Odds" in x)
     assert "No ticket this time" in msg and "HT Over/Under 0.5 · top 1 (none reached 99%)" in msg
     assert "%" in msg.split("1X2 · top 1")[1].split("\n")[2]                   # each pick shows its chance
+
+
+def test_weekly_summary_sent_sunday_evening_once_a_week():
+    from track.weekly import weekly_key
+    assert weekly_key(datetime(2026, 10, 25, 19, 0, tzinfo=timezone.utc)) == "weekly:2026-W43"   # Sun 20:00 WAT
+    assert weekly_key(datetime(2026, 10, 25, 18, 59, tzinfo=timezone.utc)) is None
+    assert weekly_key(datetime(2026, 10, 24, 21, 0, tzinfo=timezone.utc)) is None                # Saturday
+
+
+def test_weekly_summary_and_bars_split(env, monkeypatch):
+    from track.weekly import format_weekly
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        for cid in (3, 5):
+            _add_season(conn, cid, cid * 1000, rounds=1)
+            _upcoming(conn, cid, cid * 1000, 2)
+            ls.build_league(conn, cid, now=NOW)                    # staked from R2
+            for k in range(10):                                    # R2 finishes: home sides win 2-1
+                conn.execute("INSERT INTO lg_matches VALUES (?, ?, 'x', ?, 2, ?, 'a', 'b', 2, 1, 1, 0, 't', ?)",
+                             (cid * 1000 + 10 + k, cid, cid * 1000, k + 1, "2026-10-24T10:00:00+00:00"))
+        text = format_weekly(conn, now=datetime(2026, 10, 25, 19, 0, tzinfo=timezone.utc))
+    assert "Weekly summary" in text and "BUNDESLIGA (GERMANY)</b>: <b>" in text
+    assert "Dashboard only: 🇫🇷 Ligue 1" in text                   # not sent per round, still summarised
+    assert "Best ticket" in text
+
+    t = {"settled": True, "won": False, "returned": 0.0, "stake": 500}
+    merged = [dict(t, barred=True), dict(t, barred=True, won=True, returned=1500.0), dict(t, barred=False)]
+    assert ln.merged_era(merged, True) == {"n": 2, "won": 1, "profit": 500.0}
+    assert ln.merged_era(merged, False) == {"n": 1, "won": 0, "profit": -500.0}

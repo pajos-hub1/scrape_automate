@@ -52,6 +52,21 @@ def _ticket_block(title, odds, stake, legs, market, with_flag=False):
     return "\n".join(lines)
 
 
+def merged_era(merged, barred):
+    """Settled merged tickets made with (barred=True) or before the chance bars."""
+    ts = [t for t in merged if t["settled"] and t["barred"] == barred]
+    return {"n": len(ts), "won": sum(bool(t["won"]) for t in ts),
+            "profit": sum(t["returned"] - t["stake"] for t in ts)}
+
+
+def _era_line(name, x, bold=False):
+    if not x["n"]:
+        return f"{name}: no set finished yet"
+    money = _naira(x["profit"], sign=True)
+    money = f"<b>{money}</b>" if bold else money
+    return f"{name}: {money} · {x['won']}/{x['n']} tickets won"
+
+
 def _result_line(title, won, returned, legs_won, n):
     return (f"✅ {html.escape(title)} — won <b>{_naira(returned)}</b>" if won
             else f"❌ {html.escape(title)} — {legs_won}/{n} picks")
@@ -114,7 +129,7 @@ def league_messages(sent, connect=None, part="all"):
         for hour in list(by_hour)[:-1]:
             out += [(f"lgm:new:{hour}", None), (f"lgm:res:{hour}", None)]
             sent = sent | {f"lgm:new:{hour}", f"lgm:res:{hour}"}
-    total_merged = sum(t["returned"] - t["stake"] for t in merged if t["settled"])
+    era_totals = {era: merged_era(merged, era) for era in (True, False)}
     now = datetime.now(timezone.utc)
     for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
@@ -142,7 +157,10 @@ def league_messages(sent, connect=None, part="all"):
             lines += [_result_line(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["won"], t["returned"],
                                    t["legs_won"], len(t["legs"]))
                       for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"])))]
-            lines.append(f"This set {_naira(net, sign=True)} · all merged so far <b>{_naira(total_merged, sign=True)}</b>")
+            lines.append(f"This set {_naira(net, sign=True)}")
+            lines.append(_era_line("Since the bars", era_totals[True], bold=True))
+            if era_totals[False]["n"]:
+                lines.append(_era_line("Before the bars", era_totals[False]))
             res_lines.append("\n".join(lines))
             res_keys.append(key_res)
 

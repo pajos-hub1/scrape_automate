@@ -129,6 +129,7 @@ def format_recalc(season, entries, totals):
 
 
 WEEKLY_CUTS = True
+WEEKLY_SUMMARY = True      # Sunday evening summary of every league (track/weekly.py)
 LEAGUE_MESSAGES = True
 
 
@@ -328,6 +329,16 @@ def pending_messages(conn, built=None, suffix=""):
             current = list(seasons)[-1]
             out.append((key, format_cut_check(current, seasons[current]["rounds"],
                                               cut_stats(built, season=current), cut_stats(built))))
+
+    # Weekly summary (track/weekly.py): Sunday from 20:00 WAT, once a week.
+    if WEEKLY_SUMMARY and LEAGUE_MESSAGES and "hello" in sent:
+        from track.weekly import format_weekly, weekly_key
+        key = weekly_key(datetime.now(timezone.utc))
+        if key and key not in sent:
+            try:
+                out.append((key, format_weekly(conn)))
+            except Exception as e:  # noqa: BLE001
+                print(f"   (weekly summary skipped: {type(e).__name__}: {e})")
 
     # Other leagues + merged tickets: combined messages (track/league_notify.py),
     # only for chats already receiving Premier's.

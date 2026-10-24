@@ -39,6 +39,10 @@ MERGED_MIN_LEAGUES = 4
 # ticket; a league whose pick is below the bar is left off that ticket, and
 # a ticket with no qualifying pick isn't made. Chosen by the user
 # 2026-10-24 from a simulation of each bar (wins / payout / return).
+# Merged sets created from here on use MERGED_BARS (first live 2026-10-24,
+# commit 2a4cf37); earlier sets had no bar. Kept apart in every total so
+# the bars can be judged on their own.
+BARS_SINCE = "2026-10-24T12:50:00+00:00"
 MERGED_BARS = {
     1: {"1X2": 0.75, "HT_OU0.5": 0.79, "BTTS": 0.60},
     2: {"1X2": 0.70, "HT_OU0.5": 0.75, "BTTS": 0.58},
@@ -95,6 +99,8 @@ def load_league_rounds(conn, cid, now=None):
             "label": f"S{season_no[m['season_first_id']]} R{m['round_number']}", "status": "settled",
             "season_no": season_no[m["season_first_id"]],
             "sort": f"{m['season_first_id']:012d}-{m['round_number']:02d}", "games": {}})
+        # When the round's results first came in (the weekly summary's clock).
+        rnd["settled_at"] = min(rnd.get("settled_at") or m["scraped_at"], m["scraped_at"])
         labels = actual_labels({"ft_a": m["ft_a"], "ft_b": m["ft_b"], "ht_a": m["ht_a"], "ht_b": m["ht_b"]})
         rnd["games"][m["ext_match_id"]] = {"teams": (m["team_a"], m["team_b"]),
                                            "markets": candidates(m["ext_match_id"], labels)}
@@ -258,6 +264,7 @@ def merged_tickets(conn):
             l["kickoff"] = kickoffs.get(l["ext_match_id"])
         first_kickoff = min((l["kickoff"] for l in legs if l["kickoff"]), default=None)
         out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "first_kickoff": first_kickoff,
+                    "created_at": r["created_at"], "barred": r["created_at"] >= BARS_SINCE,
                     "market": r["market"], "k": r["per_league"],
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
                     "won": won if settled else None, "returned": MERGED_STAKE * odds if won else 0.0,

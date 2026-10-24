@@ -3,6 +3,7 @@ DB state. Re-run every cycle (see run.py cmd_dashboard / cmd_cycle) so the
 GitHub Pages copy always reflects the latest scrape/predict/track pass.
 """
 import html
+import math
 import re
 from pathlib import Path
 
@@ -806,6 +807,45 @@ def _render_cuts_section(built):
             f'<th>Season {current}</th><th>All seasons</th></tr></thead><tbody>{body}</tbody></table></div>')
 
 
+def _render_running_profit(conn):
+    """One small running-profit chart per league (same scale, so they compare
+    at a glance), plus merged tickets with the point the chance bars started."""
+    from track.league_slips import BARS_SINCE, FLAGS, FULL_NAMES, LEAGUES, merged_tickets
+    from track.league_notify import TELEGRAM_LEAGUES
+    from track.weekly import PREMIER_FROM_SEASON, league_rounds, merged_sets
+
+    def trend(rows, n_key):
+        out, total = [], 0.0
+        for i, r in enumerate(rows):
+            total += r["profit"]
+            out.append({"index": i, "label": r["label"], "profit": r["profit"], "cumulative": total, "bets": r[n_key]})
+        return out
+
+    series = {cid: trend([dict(r, n=len(r["slips"])) for r in rows], "n") for cid, rows in league_rounds(conn).items()}
+    sets = merged_sets(merged_tickets(conn))
+    merged = trend(sets, "tickets")
+    vals = [p["cumulative"] for t in [*series.values(), merged] for p in t] + [0.0]
+    # Round scale: gridlines every whole step (at most 5), so the labels read cleanly.
+    lo, hi = min(vals), max(vals)
+    step = next(st for st in (1000, 2500, 5000, 10000, 25000, 50000, 100000, 10**9)
+                if math.ceil(hi / st) - math.floor(lo / st) <= 5)
+    scale = (math.floor(lo / step) * step, math.ceil(hi / step) * step, step)
+    cards = []
+    for cid in [1, *LEAGUES]:
+        t = series.get(cid, [])
+        where = "Telegram + dashboard" if cid == 1 or cid in TELEGRAM_LEAGUES else "dashboard only"
+        since = f"since S{PREMIER_FROM_SEASON}" if cid == 1 else "since staking started"
+        cards.append(f'<h4>{FLAGS[cid]} {html.escape(FULL_NAMES[cid])} <span class="conf">&middot; {since} &middot; {where}</span></h4>'
+                     + cumulative_profit_chart(t, height=170, fmt=fmt_naira, unit="", bet_word="tickets", y_range=scale))
+    first_barred = next((i for i, x in enumerate(sets) if x["barred"]), None)
+    cards.append('<h4>🔗 Merged tickets <span class="conf">&middot; per set &middot; dashed line: chance bars start</span></h4>'
+                 + cumulative_profit_chart(merged, height=170, fmt=fmt_naira, unit="", bet_word="tickets", y_range=scale,
+                                           marker=(first_barred, "bars") if first_barred else None))
+    return ("<h3>Running profit &mdash; one chart per league, same scale</h3>"
+            '<p class="conf">Each point is one finished round (merged: one set). Above the zero line = ahead overall.</p>'
+            + "".join(cards))
+
+
 def _render_leagues_section(conn):
     """Other leagues' paper tickets + merged cross-league tickets
     (track/league_slips.py)."""
@@ -831,7 +871,7 @@ def _render_leagues_section(conn):
     merged = merged_tickets(conn)
     by_type = {}
     for t in merged:
-        x = by_type.setdefault(merged_name(t), {"n": 0, "settled": 0, "won": 0, "staked": 0.0, "returned": 0.0})
+        x = by_type.setdefault(("Since the bars" if t["barred"] else "Before the bars") + " · " + merged_name(t), {"n": 0, "settled": 0, "won": 0, "staked": 0.0, "returned": 0.0})
         x["n"] += 1
         if t["settled"]:
             x["settled"] += 1
@@ -845,7 +885,7 @@ def _render_leagues_section(conn):
         return (f'<tr><td>{html.escape(n)}</td><td>{won}</td><td>{_naira(x["staked"])}</td>'
                 f'<td>{_naira(x["returned"])}</td><td class="{"hit" if profit > 0 else "miss"}">{fmt_naira(profit)}</td></tr>')
 
-    mrows = "".join(_merged_row(n, x) for n, x in sorted(by_type.items()))
+    mrows = "".join(_merged_row(n, x) for n, x in sorted(by_type.items(), key=lambda kv: (not kv[0].startswith("Since"), kv[0])))
     merged_table = ('<div class="table-scroll"><table><thead><tr><th>Merged ticket</th><th>Won</th><th>Staked</th>'
                     '<th>Returned</th><th>Profit</th></tr></thead>'
                     f'<tbody>{mrows or "<tr><td colspan=5>None yet</td></tr>"}</tbody></table></div>')
@@ -878,7 +918,7 @@ def _render_leagues_section(conn):
     comp_table = ('<div class="table-scroll"><table><thead><tr><th>League</th><th>Rounds</th><th>Tickets won</th>'
                   '<th>Ticket return</th><th>Picks won vs odds</th><th>Cut per pick</th></tr></thead>'
                   f'<tbody>{"".join(_comp_row(i, r) for i, r in enumerate(comp_rows))}</tbody></table></div>')
-    return "".join(["<h3>League comparison (Step 3) &mdash; best to worst</h3>", comp_table, league_table,
+    return "".join([_render_running_profit(conn), "<h3>League comparison (Step 3) &mdash; best to worst</h3>", comp_table, league_table,
                     "<h3>Merged tickets (best picks across all 7 leagues, ₦500 each)</h3>", merged_table,
                     f"<h3>Latest merged tickets{(' &mdash; ' + html.escape(latest[0]['label'])) if latest else ''}</h3>",
                     latest_html or '<p class="empty">None yet.</p>'])
