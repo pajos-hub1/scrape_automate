@@ -35,6 +35,14 @@ LEAGUE_PLAN = {"1X2 top 5": 500, "HT_OU0.5 top 5": 500, "BTTS top 5": 500}
 MERGED_MARKETS = ["1X2", "HT_OU0.5", "BTTS"]
 MERGED_STAKE = 500
 MERGED_MIN_LEAGUES = 4
+# Minimum chance (bet9ja's margin-free odds) a pick needs to go on a merged
+# ticket; a league whose pick is below the bar is left off that ticket, and
+# a ticket with no qualifying pick isn't made. Chosen by the user
+# 2026-10-24 from a simulation of each bar (wins / payout / return).
+MERGED_BARS = {
+    1: {"1X2": 0.75, "HT_OU0.5": 0.79, "BTTS": 0.60},
+    2: {"1X2": 0.70, "HT_OU0.5": 0.70, "BTTS": 0.58},
+}
 SHORT = {"1X2": "1X2", "HT_OU0.5": "HT O/U 0.5", "BTTS": "BTTS"}
 
 
@@ -211,10 +219,13 @@ def create_merged(conn, built_by_league, now=None):
         if len(picks[market]) < MERGED_MIN_LEAGUES:
             continue
         for k in (1, 2):
+            bar = MERGED_BARS[k][market]
             legs = [{"league": cid, "round": rno, "teams": list(l["teams"]), "market": market,
                      "selection": l["selection"], "price": l["price"], "odds_p": l["odds_p"],
                      "ext_match_id": l["ext_match_id"]}
-                    for cid, ls, rno in picks[market] for l in ls[:k]]
+                    for cid, ls, rno in picks[market] for l in ls[:k] if l["odds_p"] >= bar]
+            if not legs:
+                continue                 # no pick reached the bar this set: no ticket
             key = f"{set_id}|{market}|{k}"
             conn.execute("INSERT OR IGNORE INTO lg_merged (ticket_key, hour, market, per_league, legs, created_at, label) "
                          "VALUES (?, ?, ?, ?, ?, ?, ?)", (key, set_id, market, k, json.dumps(legs), now_iso(), label))

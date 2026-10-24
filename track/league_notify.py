@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 from track.betslips import played, summarize
-from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, league_totals, merged_tickets
+from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_league, league_totals, merged_tickets
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
 MERGED_ORDER = ["1X2", "HT_OU0.5", "BTTS"]
@@ -41,7 +41,9 @@ def _ticket_block(title, odds, stake, legs, market, with_flag=False):
     for leg in legs:
         a, b = (_t(x) for x in leg["teams"])
         flag = (FLAGS.get(leg.get("league"), "") + " ") if with_flag else ""
-        lines.append(f"{flag}{html.escape(a)} v {html.escape(b)} — {html.escape(PICK_TEXT[market](a, b, leg['selection']))}")
+        chance = f" · {leg['odds_p'] * 100:.0f}%" if with_flag and leg.get("odds_p") else ""
+        lines.append(f"{flag}{html.escape(a)} v {html.escape(b)} — {html.escape(PICK_TEXT[market](a, b, leg['selection']))}"
+                     f"{chance}")
     return "\n".join(lines)
 
 
@@ -117,8 +119,14 @@ def league_messages(sent, connect=None, part="all"):
         if key_new not in sent:
             parts = [_set_header(ts)]
             for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"]))):
-                parts.append(_ticket_block(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["odds"], t["stake"],
-                                           t["legs"], t["market"], with_flag=True))
+                bar = MERGED_BARS[t["k"]][t["market"]]
+                parts.append(_ticket_block(f"{TICKET_TITLE[t['market']]} · top {t['k']} · picks {bar * 100:.0f}%+",
+                                           t["odds"], t["stake"], t["legs"], t["market"], with_flag=True))
+            made = {(t["market"], t["k"]) for t in ts}
+            skipped = [f"{TICKET_TITLE[m]} · top {k} (none reached {MERGED_BARS[k][m] * 100:.0f}%)"
+                       for k in (1, 2) for m in MERGED_ORDER if (m, k) not in made]
+            if skipped:
+                parts.append("<i>No ticket this time: " + html.escape("; ".join(skipped)) + "</i>")
             new_blocks.append("\n\n".join(parts))
             new_keys.append(key_new)
         if key_res not in sent and all(t["settled"] for t in ts):
@@ -189,7 +197,7 @@ def _set_header(ts):
     lines = [head, rounds]
     if kicks:
         lines.append(f"🏁 Results expected about {max(kicks) + RESULT_DELAY:%H:%M} WAT")
-    lines.append(f"{len(ts)} tickets · ₦{ts[0]['stake']:,} each · best picks from {len(per_league)} leagues")
+    lines.append(f"{len(ts)} ticket{'s' if len(ts) != 1 else ''} · ₦{ts[0]['stake']:,} each · picks from {len(per_league)} leagues")
     return "\n".join(lines)
 
 

@@ -8,6 +8,14 @@ import track.league_slips as ls
 from db.connection import get_connection
 
 NOW = datetime(2026, 10, 23, 20, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _no_bars(monkeypatch):
+    """Tests use made-up odds; switch the chance bars off unless a test sets them."""
+    off = {1: {"1X2": 0.0, "HT_OU0.5": 0.0, "BTTS": 0.0}, 2: {"1X2": 0.0, "HT_OU0.5": 0.0, "BTTS": 0.0}}
+    monkeypatch.setattr(ls, "MERGED_BARS", off)
+    monkeypatch.setattr(ln, "MERGED_BARS", off)
 ODDS = {"1X2": {"Home": 1.5, "Draw": 4.0, "Away": 6.0}, "HT_OU0.5": {"Over": 1.25, "Under": 3.8},
         "BTTS": {"Yes": 1.9, "No": 1.8}}
 
@@ -186,3 +194,23 @@ def test_merged_header_shows_place_by_rounds_and_result_time():
     assert "Place by 12:35 WAT" in head                          # 11:35 UTC = 12:35 in Nigeria
     assert "🇮🇹 Serie A R3 12:35 · 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier R4 13:25" in head
     assert "Results expected about 15:05 WAT" in head           # last kickoff 13:25 WAT + 1h40
+
+
+def test_merged_bars_filter_picks_and_skip_empty_tickets(env, monkeypatch):
+    monkeypatch.setattr(ls, "MERGED_BARS", {1: {"1X2": 0.60, "HT_OU0.5": 0.99, "BTTS": 0.0},
+                                            2: {"1X2": 0.0, "HT_OU0.5": 0.0, "BTTS": 0.0}})
+    with get_connection(env[0]) as conn:
+        for cid in (1, 2, 3, 4):
+            _add_season(conn, cid, cid * 10000, rounds=1)
+            _upcoming(conn, cid, cid * 10000, 2)
+        built = {cid: ls.build_slips(ls.load_league_rounds(conn, cid, now=NOW), plan_fn=lambda r: ls.LEAGUE_PLAN)
+                 for cid in (1, 2, 3, 4)}
+        keys = ls.create_merged(conn, built, now=NOW)
+        assert not any("|HT_OU0.5|1" in k for k in keys)              # nobody reaches 99%: no ticket
+        t = {ls.merged_name(t): t for t in ls.merged_tickets(conn)}
+        assert all(l["odds_p"] >= 0.60 for l in t["1X2 merged top 1"]["legs"])
+    monkeypatch.setattr(ln, "MERGED_BARS", ls.MERGED_BARS)
+    msg = next(x for _, x in ln.league_messages({"hello"}, connect=lambda: get_connection(env[0]), part="merged")
+               if x and "Odds" in x)
+    assert "No ticket this time" in msg and "HT Over/Under 0.5 · top 1 (none reached 99%)" in msg
+    assert "%" in msg.split("1X2 · top 1")[1].split("\n")[2]                   # each pick shows its chance
