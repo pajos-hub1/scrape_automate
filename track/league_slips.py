@@ -225,11 +225,13 @@ def merged_tickets(conn):
     """Every merged ticket, settled where all its games have results."""
     rows = conn.execute("SELECT * FROM lg_merged ORDER BY created_at, market, per_league").fetchall()
     ids = {leg["ext_match_id"] for r in rows for leg in json.loads(r["legs"])}
-    results = {}
+    results, kickoffs = {}, {}
     if ids:
         marks = ",".join("?" for _ in ids)
         results = {r["ext_match_id"]: dict(r) for r in conn.execute(
             f"SELECT ext_match_id, ft_a, ft_b, ht_a, ht_b FROM all_lg_matches WHERE ext_match_id IN ({marks})", list(ids))}
+        kickoffs = {r["ext_match_id"]: r["kickoff_time"] for r in conn.execute(
+            f"SELECT ext_match_id, kickoff_time FROM all_lg_events WHERE ext_match_id IN ({marks})", list(ids))}
     out = []
     for r in rows:
         legs = json.loads(r["legs"])
@@ -240,7 +242,9 @@ def merged_tickets(conn):
         won = settled and all(l["won"] for l in legs)
         odds = math.prod(l["price"] for l in legs)
         label = r["label"] or f"{r['hour'][11:13]}:00 UTC"     # sets made hourly before 2026-10-23 21:00
-        out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "market": r["market"], "k": r["per_league"],
+        first_kickoff = min((kickoffs[l["ext_match_id"]] for l in legs if kickoffs.get(l["ext_match_id"])), default=None)
+        out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "first_kickoff": first_kickoff,
+                    "market": r["market"], "k": r["per_league"],
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
                     "won": won if settled else None, "returned": MERGED_STAKE * odds if won else 0.0,
                     "legs_won": sum(1 for l in legs if l["won"])})

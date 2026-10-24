@@ -28,11 +28,11 @@ def _add_season(conn, cid, first_id, rounds, gpr=10, with_odds=True, played=True
                         conn.execute("INSERT OR IGNORE INTO lg_odds VALUES (?, ?, ?, ?, 'c')", (ext, m, sel, p))
 
 
-def _upcoming(conn, cid, first_id, round_no, gpr=10):
+def _upcoming(conn, cid, first_id, round_no, gpr=10, kickoff="2099-01-01T21:00:00Z"):
     for k in range(gpr):
         ext = first_id + (round_no - 1) * gpr + k
         conn.execute("INSERT INTO lg_events VALUES (?, ?, 'x', ?, ?, ?, ?, 'f')",
-                     (ext, cid, ext, f"L{cid}A{k}", f"L{cid}B{k}", "2026-10-23T21:00:00Z"))
+                     (ext, cid, ext, f"L{cid}A{k}", f"L{cid}B{k}", kickoff))
         for m, book in ODDS.items():
             for sel, p in book.items():
                 conn.execute("INSERT INTO lg_odds VALUES (?, ?, ?, ?, 'c')", (ext, m, sel, p))
@@ -96,8 +96,8 @@ def test_combined_message_sent_once_and_marks_every_item(env, monkeypatch):
         ls.create_merged(conn, built, now=NOW)
     connect = lambda: get_connection(env[0])
     msgs = ln.league_messages({"hello"}, connect=connect)
-    texts = [t for _, t in msgs if t]
-    assert len(texts) == 1 and "Merged tickets" in texts[0] and "1X2 · top 1" in texts[0]
+    texts = [t for _, t in msgs if t and "Merged tickets" in t]
+    assert len(texts) == 1 and "1X2 · top 1" in texts[0]
     sent = {"hello"} | {k for k, _ in msgs}
     assert [t for _, t in ln.league_messages(sent, connect=connect) if t] == []                 # nothing repeated
 
@@ -161,3 +161,18 @@ def test_league_comparison(env):
         assert by[5]["rounds"] == 0
         text = lr.format_comparison(conn, "League comparison · after PREMIER season 33")
         assert "PREMIER (ENGLAND)" in text and "LIGA (SPAIN)" in text and "no finished rounds with odds yet" in text
+
+
+
+def test_merged_set_is_never_sent_after_kickoff(env):
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        for cid in (1, 2, 3, 4):
+            _add_season(conn, cid, cid * 10000, rounds=1)
+            _upcoming(conn, cid, cid * 10000, 2, kickoff="2026-01-01T07:40:00Z")      # long since played
+        built = {cid: ls.build_slips(ls.load_league_rounds(conn, cid, now=NOW.replace(year=2025)),
+                                     plan_fn=lambda r: ls.LEAGUE_PLAN) for cid in (1, 2, 3, 4)}
+        assert ls.create_merged(conn, built, now=NOW.replace(year=2025))
+    msgs = ln.league_messages({"hello"}, connect=connect, part="merged")
+    assert not any(t and "Odds" in t for _, t in msgs)                               # no stale slips
+    assert any(k.startswith("lgm:new:") and t is None for k, t in msgs)             # recorded silently

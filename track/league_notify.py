@@ -8,6 +8,7 @@ run is missed.
 """
 import hashlib
 import html
+from datetime import datetime, timezone
 from collections import defaultdict
 
 from track.betslips import played, summarize
@@ -105,8 +106,14 @@ def league_messages(sent, connect=None, part="all"):
             out += [(f"lgm:new:{hour}", None), (f"lgm:res:{hour}", None)]
             sent = sent | {f"lgm:new:{hour}", f"lgm:res:{hour}"}
     total_merged = sum(t["returned"] - t["stake"] for t in merged if t["settled"])
+    now = datetime.now(timezone.utc)
     for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
+        if key_new not in sent and _kicked_off(ts, now):
+            # Never send slips for games already under way (a late run, or a
+            # newly connected bot catching up): record it silently instead.
+            out.append((key_new, None))
+            sent = sent | {key_new}
         if key_new not in sent:
             n_leagues = len(ts[0]["legs"]) // ts[0]["k"]
             parts = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>\n"
@@ -149,6 +156,16 @@ def _season_over(built, season):
 
 
 MERGED_HELLO = "mhello"
+
+
+def _kicked_off(tickets, now):
+    times = [t["first_kickoff"] for t in tickets if t.get("first_kickoff")]
+    if not times:
+        return False
+    try:
+        return datetime.fromisoformat(min(times).replace("Z", "+00:00")) <= now
+    except ValueError:
+        return False
 
 
 def _digest(keys):
