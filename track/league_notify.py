@@ -70,9 +70,14 @@ def _era_line(name, x, bold=False):
     return f"{name}: {money} · {x['won']}/{x['n']} tickets won"
 
 
-def _result_line(title, won, returned, legs_won, n):
-    return (f"✅ {html.escape(title)} — won <b>{_naira(returned)}</b>" if won
-            else f"❌ {html.escape(title)} — {legs_won}/{n} picks")
+def _result_line(title, won, returned, legs_won, n, stake):
+    return (f"✅ {html.escape(title)} — won <b>{_naira(returned)}</b> ({_naira(returned - stake, sign=True)})" if won
+            else f"❌ {html.escape(title)} — {legs_won}/{n} picks ({_naira(-stake, sign=True)})")
+
+
+def merged_start(merged):
+    """Name of the first set made with the bars -- where the merged total starts."""
+    return next((t["label"].split(" · ")[0] for t in merged if t["barred"]), None)
 
 
 def _booking(conn, built, merged, sent, part):
@@ -160,7 +165,9 @@ def league_messages(sent, connect=None, part="all"):
         for hour in list(by_hour)[:-1]:
             out += [(f"lgm:new:{hour}", None), (f"lgm:res:{hour}", None)]
             sent = sent | {f"lgm:new:{hour}", f"lgm:res:{hour}"}
-    era_totals = {era: merged_era(merged, era) for era in (True, False)}
+    # The running total starts at the first set made with the chance bars
+    # (user's choice 2026-10-24); earlier sets are left out of messages.
+    since_bars, start = merged_era(merged, True), merged_start(merged)
     now = datetime.now(timezone.utc)
     for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
@@ -187,12 +194,11 @@ def league_messages(sent, connect=None, part="all"):
             net = sum(t["returned"] - t["stake"] for t in ts)
             lines = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>"]
             lines += [_result_line(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["won"], t["returned"],
-                                   t["legs_won"], len(t["legs"]))
+                                   t["legs_won"], len(t["legs"]), t["stake"])
                       for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"])))]
             lines.append(f"This set {_naira(net, sign=True)}")
-            lines.append(_era_line("Since the bars", era_totals[True], bold=True))
-            if era_totals[False]["n"]:
-                lines.append(_era_line("Before the bars", era_totals[False]))
+            if ts[0]["barred"]:
+                lines.append(_era_line(f"Total from {start}", since_bars, bold=True))
             res_lines.append("\n".join(lines))
             res_keys.append(key_res)
 

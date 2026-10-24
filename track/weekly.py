@@ -7,7 +7,7 @@ import html
 from datetime import datetime, timedelta, timezone
 
 from track.betslips import build_slips, load_rounds, played
-from track.league_notify import TELEGRAM_LEAGUES, merged_era
+from track.league_notify import TELEGRAM_LEAGUES, merged_era, merged_start
 from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, merged_name, merged_tickets
 
 PREMIER_FROM_SEASON = 33     # Premier's current plan (3 top-5 tickets at ₦500) started at S33
@@ -88,15 +88,14 @@ def format_weekly(conn, now=None):
         lines.append("Dashboard only: " + " · ".join(f"{FLAGS[cid]} {SHORT[cid]} {_naira(wk_profit[cid], sign=True)}"
                                                     for cid in others))
 
-    wk_merged = [t for t in merged if t["settled"] and (t["first_kickoff"] or t["created_at"]) >= since]
+    # Merged count from the first set made with the chance bars (earlier sets ignored).
+    wk_merged = [t for t in merged if t["settled"] and t["barred"] and (t["first_kickoff"] or t["created_at"]) >= since]
     if wk_merged:
+        x = merged_era(merged, True)
         lines.append("")
         lines.append(f"🔗 <b>Merged</b>: {_naira(sum(t['returned'] - t['stake'] for t in wk_merged), sign=True)} this week "
-                     f"({sum(bool(t['won']) for t in wk_merged)}/{len(wk_merged)} tickets won)")
-        for barred, name in ((True, "since the bars"), (False, "before the bars")):
-            x = merged_era(merged, barred)
-            if x["n"]:
-                lines.append(f"   {name}: {_naira(x['profit'], sign=True)} · {x['won']}/{x['n']} won")
+                     f"({sum(bool(t['won']) for t in wk_merged)}/{len(wk_merged)} tickets won) · "
+                     f"total from {merged_start(merged)} {_naira(x['profit'], sign=True)}")
 
     telegram_week = sum(wk_profit[cid] for cid in shown) + sum(t["returned"] - t["stake"] for t in wk_merged)
     lines += ["", f"💰 This week, everything sent on Telegram: <b>{_naira(telegram_week, sign=True)}</b>"]
