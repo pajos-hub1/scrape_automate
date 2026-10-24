@@ -176,3 +176,13 @@ def test_merged_set_is_never_sent_after_kickoff(env):
     msgs = ln.league_messages({"hello"}, connect=connect, part="merged")
     assert not any(t and "Odds" in t for _, t in msgs)                               # no stale slips
     assert any(k.startswith("lgm:new:") and t is None for k, t in msgs)             # recorded silently
+
+
+def test_merged_header_shows_place_by_rounds_and_result_time():
+    legs = [{"league": 4, "round": 3, "kickoff": "2026-10-24T11:35:00Z"},
+            {"league": 1, "round": 4, "kickoff": "2026-10-24T12:25:00Z"}]
+    head = ln._set_header([{"label": "Premier R4 · from 12:25 UTC", "legs": legs, "stake": 500}])
+    assert "Merged tickets · Premier R4" in head and "from 12:25" not in head
+    assert "Place by 12:35 WAT" in head                          # 11:35 UTC = 12:35 in Nigeria
+    assert "🇮🇹 Serie A R3 12:35 · 🏴󠁧󠁢󠁥󠁮󠁧󠁿 Premier R4 13:25" in head
+    assert "Results expected about 15:05 WAT" in head           # last kickoff 13:25 WAT + 1h40

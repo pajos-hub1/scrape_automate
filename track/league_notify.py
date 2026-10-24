@@ -8,7 +8,7 @@ run is missed.
 """
 import hashlib
 import html
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 from track.betslips import played, summarize
@@ -115,9 +115,7 @@ def league_messages(sent, connect=None, part="all"):
             out.append((key_new, None))
             sent = sent | {key_new}
         if key_new not in sent:
-            n_leagues = len(ts[0]["legs"]) // ts[0]["k"]
-            parts = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>\n"
-                     f"{len(ts)} tickets · ₦{ts[0]['stake']:,} each · best picks from {n_leagues} leagues"]
+            parts = [_set_header(ts)]
             for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"]))):
                 parts.append(_ticket_block(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["odds"], t["stake"],
                                            t["legs"], t["market"], with_flag=True))
@@ -156,6 +154,43 @@ def _season_over(built, season):
 
 
 MERGED_HELLO = "mhello"
+
+
+RESULT_DELAY = timedelta(minutes=100)    # measured: bet9ja posts a round's results ~92-105 min after kickoff
+SHORT_LEAGUE = {1: "Premier", 2: "Liga", 3: "Bundes", 4: "Serie A", 5: "Ligue 1", 6: "Primeira", 7: "Eredivisie"}
+
+
+WAT = timezone(timedelta(hours=1), "WAT")   # Nigeria time: what the reader's Telegram shows
+
+
+def _hhmm(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(WAT) if ts else None
+
+
+def _set_header(ts):
+    """'place by' (the set's first kickoff), every league's round and
+    kickoff, and when the results should be in."""
+    per_league = {}
+    for t in ts:
+        for l in t["legs"]:
+            k = _hhmm(l.get("kickoff"))
+            cur = per_league.get(l["league"])
+            if cur is None or (k and (cur[1] is None or k < cur[1])):
+                per_league[l["league"]] = (l.get("round"), k)
+    order = sorted(per_league.items(), key=lambda kv: (kv[1][1] is None, kv[1][1] or datetime.max.replace(tzinfo=WAT)))
+    kicks = [k for _, (_, k) in order if k]
+    name = ts[0]["label"].split(" · ")[0]
+    head = f"🔗 <b>Merged tickets · {html.escape(name)}</b>"
+    if kicks:
+        head += f"\n⏰ <b>Place by {min(kicks):%H:%M} WAT</b> (first kick-off)"
+    rounds = " · ".join(f"{FLAGS.get(cid, '')} {SHORT_LEAGUE.get(cid, cid)}"
+                        + (f" R{rno}" if rno else "") + (f" {k:%H:%M}" if k else "")
+                        for cid, (rno, k) in order)
+    lines = [head, rounds]
+    if kicks:
+        lines.append(f"🏁 Results expected about {max(kicks) + RESULT_DELAY:%H:%M} WAT")
+    lines.append(f"{len(ts)} tickets · ₦{ts[0]['stake']:,} each · best picks from {len(per_league)} leagues")
+    return "\n".join(lines)
 
 
 def _kicked_off(tickets, now):

@@ -197,7 +197,7 @@ def create_merged(conn, built_by_league, now=None):
     label = f"Premier R{anchor['number']}" + (f" · from {kick} UTC" if kick else "")
     used = {leg["ext_match_id"] for r in conn.execute(
         "SELECT legs FROM lg_merged ORDER BY created_at DESC LIMIT 60") for leg in json.loads(r["legs"])}
-    picks = defaultdict(list)            # market -> [(league, [legs sorted by score])]
+    picks = defaultdict(list)            # market -> [(league, [legs sorted by score], round number)]
     for cid, built in built_by_league.items():
         up = [e for e in built if e["round"]["status"] == "upcoming"]
         if not up or used & set(up[-1]["round"]["games"]):
@@ -205,15 +205,16 @@ def create_merged(conn, built_by_league, now=None):
         for slip in up[-1]["slips"]:
             market = slip["name"].replace(" top 5", "")
             if market in MERGED_MARKETS and slip["name"].endswith(" top 5"):
-                picks[market].append((cid, slip["legs"]))
+                picks[market].append((cid, slip["legs"], up[-1]["round"]["number"]))
     created = []
     for market in MERGED_MARKETS:
         if len(picks[market]) < MERGED_MIN_LEAGUES:
             continue
         for k in (1, 2):
-            legs = [{"league": cid, "teams": list(l["teams"]), "market": market, "selection": l["selection"],
-                     "price": l["price"], "odds_p": l["odds_p"], "ext_match_id": l["ext_match_id"]}
-                    for cid, ls in picks[market] for l in ls[:k]]
+            legs = [{"league": cid, "round": rno, "teams": list(l["teams"]), "market": market,
+                     "selection": l["selection"], "price": l["price"], "odds_p": l["odds_p"],
+                     "ext_match_id": l["ext_match_id"]}
+                    for cid, ls, rno in picks[market] for l in ls[:k]]
             key = f"{set_id}|{market}|{k}"
             conn.execute("INSERT OR IGNORE INTO lg_merged (ticket_key, hour, market, per_league, legs, created_at, label) "
                          "VALUES (?, ?, ?, ?, ?, ?, ?)", (key, set_id, market, k, json.dumps(legs), now_iso(), label))
@@ -242,7 +243,9 @@ def merged_tickets(conn):
         won = settled and all(l["won"] for l in legs)
         odds = math.prod(l["price"] for l in legs)
         label = r["label"] or f"{r['hour'][11:13]}:00 UTC"     # sets made hourly before 2026-10-23 21:00
-        first_kickoff = min((kickoffs[l["ext_match_id"]] for l in legs if kickoffs.get(l["ext_match_id"])), default=None)
+        for l in legs:
+            l["kickoff"] = kickoffs.get(l["ext_match_id"])
+        first_kickoff = min((l["kickoff"] for l in legs if l["kickoff"]), default=None)
         out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "first_kickoff": first_kickoff,
                     "market": r["market"], "k": r["per_league"],
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
