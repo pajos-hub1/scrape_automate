@@ -41,7 +41,7 @@ MERGED_MIN_LEAGUES = 4
 # 2026-10-24 from a simulation of each bar (wins / payout / return).
 MERGED_BARS = {
     1: {"1X2": 0.75, "HT_OU0.5": 0.79, "BTTS": 0.60},
-    2: {"1X2": 0.70, "HT_OU0.5": 0.70, "BTTS": 0.58},
+    2: {"1X2": 0.70, "HT_OU0.5": 0.75, "BTTS": 0.58},
 }
 SHORT = {"1X2": "1X2", "HT_OU0.5": "HT O/U 0.5", "BTTS": "BTTS"}
 
