@@ -49,9 +49,11 @@ def _result_line(title, won, returned, legs_won, n):
             else f"❌ {html.escape(title)} — {legs_won}/{n} picks")
 
 
-def league_messages(sent, connect=None):
+def league_messages(sent, connect=None, part="all"):
     """[(key, text)] for the combined messages, plus (item_key, None) entries
-    marking every league round / merged hour they cover as sent."""
+    marking every league round / merged hour they cover as sent.
+    part: "all", "leagues" (per-league messages only) or "merged" (merged
+    tickets only -- for the separate merged-tickets bot)."""
     from db.connection import get_connection
     with (connect or get_connection)() as conn:
         built = {cid: build_league(conn, cid) for cid in LEAGUES}
@@ -59,7 +61,7 @@ def league_messages(sent, connect=None):
 
     from track.notify import format_result, format_season_summary, format_upcoming   # lazy: notify imports this module
     out = []
-    for cid, b in built.items():
+    for cid, b in (built.items() if part in ("all", "leagues") else []):
         name, totals = FULL_NAMES[cid], league_totals(b)
         parts, keys = [], []
         for e in b:
@@ -92,8 +94,16 @@ def league_messages(sent, connect=None):
 
     new_blocks, new_keys, res_lines, res_keys = [], [], [], []
     by_hour = defaultdict(list)
-    for t in merged:
+    for t in (merged if part in ("all", "merged") else []):
         by_hour[t["hour"]].append(t)
+    if part == "merged" and MERGED_HELLO not in sent and by_hour:
+        # A newly connected merged-tickets bot: say hello, then only the
+        # latest set onwards -- don't replay every earlier set.
+        out.append((MERGED_HELLO, "👋 <b>NewFiti Merged connected.</b> Merged cross-league tickets "
+                                  "(paper, ₦500 each) and their results will come here."))
+        for hour in list(by_hour)[:-1]:
+            out += [(f"lgm:new:{hour}", None), (f"lgm:res:{hour}", None)]
+            sent = sent | {f"lgm:new:{hour}", f"lgm:res:{hour}"}
     total_merged = sum(t["returned"] - t["stake"] for t in merged if t["settled"])
     for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
@@ -136,6 +146,9 @@ def _season_over(built, season):
     gpr = max((len(r["games"]) for r in rounds), default=10)
     last = max((r["number"] for r in rounds if r["status"] == "settled"), default=0)
     return later or last >= (38 if gpr >= 10 else 34)
+
+
+MERGED_HELLO = "mhello"
 
 
 def _digest(keys):

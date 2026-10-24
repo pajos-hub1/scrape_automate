@@ -330,3 +330,50 @@ def test_backlog_sends_one_catchup_then_latest_result(env, monkeypatch):
     got.clear()
     _run_chats(env, monkeypatch, built, sender, ["me"])
     assert got == []                                          # nothing repeated
+
+
+def _fake_league_messages(sent, connect=None, part="all"):
+    out = []
+    if part in ("all", "leagues") and "lgslips:2:1:1" not in sent:
+        out.append(("lgslips:2:1:1", "LIGA slips"))
+    if part in ("all", "merged"):
+        if part == "merged" and "mhello" not in sent:
+            out.append(("mhello", "merged hello"))
+        if "lgm:new:P1R1" not in sent:
+            out.append(("lgm:new:P1R1", "MERGED tickets"))
+    return out
+
+
+def _route_run(env, monkeypatch, merged_chats, outbox):
+    monkeypatch.setattr(notify_mod, "LEAGUE_MESSAGES", True)
+    monkeypatch.setattr(notify_mod, "WEEKLY_CUTS", False)
+    monkeypatch.setattr(notify_mod, "RECALC_BEFORE", "2000-01-01")
+    monkeypatch.setattr(notify_mod, "league_messages", _fake_league_messages)
+    monkeypatch.setattr(notify_mod, "build_slips", lambda rounds: [])
+    monkeypatch.setattr(notify_mod, "load_rounds", lambda conn: [])
+    with get_connection(env[0]) as conn:
+        conn.execute("INSERT OR IGNORE INTO notifications (key, sent_at) VALUES ('hello', 'x')")
+        return notify(conn, sender=lambda text, chat_id: outbox.append((chat_id, text)), chats=["me"],
+                      merged_chats=merged_chats)
+
+
+def test_merged_tickets_go_only_to_the_merged_bot(env, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_MERGED_BOT_TOKEN_1", "x")
+    monkeypatch.setenv("TELEGRAM_MERGED_CHAT_ID_1", "m1")
+    outbox = []
+    _route_run(env, monkeypatch, ["m1"], outbox)
+    main = [t for c, t in outbox if c == "me"]
+    merged = [t for c, t in outbox if c == "m1"]
+    assert main == ["LIGA slips"]                                   # no merged tickets on the main bot
+    assert merged == ["merged hello", "MERGED tickets"]
+    outbox.clear()
+    _route_run(env, monkeypatch, ["m1"], outbox)
+    assert outbox == []                                             # nothing repeated
+
+
+def test_merged_tickets_stay_on_main_bot_until_configured(env, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_MERGED_BOT_TOKEN_1", raising=False)
+    monkeypatch.delenv("TELEGRAM_MERGED_CHAT_ID_1", raising=False)
+    outbox = []
+    _route_run(env, monkeypatch, None, outbox)
+    assert [t for c, t in outbox] == ["LIGA slips", "MERGED tickets"] and all(c == "me" for c, _ in outbox)

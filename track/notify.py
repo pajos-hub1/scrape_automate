@@ -223,6 +223,15 @@ def _legacy_upcoming_key(entry):
     return "slips:" + hashlib.sha1(json.dumps([legacy_label, pairings]).encode()).hexdigest()[:16]
 
 
+def merged_bot():
+    """(token, [chat ids]) of the separate merged-tickets bot, or None if
+    TELEGRAM_MERGED_BOT_TOKEN_1 / TELEGRAM_MERGED_CHAT_ID_1 aren't set --
+    then merged tickets stay with the main bot."""
+    token = os.environ.get("TELEGRAM_MERGED_BOT_TOKEN_1")
+    chats = [c.strip() for c in os.environ.get("TELEGRAM_MERGED_CHAT_ID_1", "").split(",") if c.strip()]
+    return (token, chats) if token and chats else None
+
+
 def chat_ids():
     """TELEGRAM_CHAT_ID may hold several chats, comma-separated. The first
     is the owner's: it also gets the workflow's failure alerts."""
@@ -324,7 +333,8 @@ def pending_messages(conn, built=None, suffix=""):
     # only for chats already receiving Premier's.
     if LEAGUE_MESSAGES and "hello" in sent:
         try:
-            out.extend(league_messages(sent))
+            # Merged tickets go to their own bot once it's configured.
+            out.extend(league_messages(sent, part="leagues" if merged_bot() else "all"))
         except Exception as e:  # noqa: BLE001 -- never let them break Premier's messages
             print(f"   (other-league messages skipped: {type(e).__name__}: {e})")
 
@@ -384,17 +394,17 @@ def _describe_error(e):
     return detail
 
 
-def notify(conn, sender=send_telegram, chats=None):
+def notify(conn, sender=send_telegram, chats=None, merged_chats=None):
     """Send every pending message; record each one only after it's sent.
     The outcome is also saved to notify_status for diagnosis."""
-    result = _notify(conn, sender, chats)
+    result = _notify(conn, sender, chats, merged_chats)
     conn.execute("INSERT OR REPLACE INTO notify_status (id, at, summary) VALUES (1, ?, ?)",
                  (now_iso(), json.dumps(result)))
     conn.commit()
     return result
 
 
-def _notify(conn, sender, chats):
+def _notify(conn, sender, chats, merged_chats=None):
     if sender is send_telegram:
         missing = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID") if not os.environ.get(k)]
         if missing:
@@ -421,6 +431,40 @@ def _notify(conn, sender, chats):
                          (key + suffix, now_iso()))
             conn.commit()
             sent.append(key if len(chats) == 1 else f"{label} {key}")
+
+    # The separate merged-tickets bot, if configured: only merged tickets,
+    # tracked per chat under its own "@M<hash>" keys.
+    mb = merged_bot() if (sender is send_telegram or merged_chats is not None) else None
+    if merged_chats is not None:
+        mb = (None, merged_chats)
+    if mb and LEAGUE_MESSAGES:
+        token, mchats = mb
+        for j, chat in enumerate(mchats):
+            suffix = "@M" + hashlib.sha1(str(chat).encode()).hexdigest()[:8]
+            label = f"merged-bot chat{j + 1}"
+            rows = [r["key"] for r in conn.execute("SELECT key FROM notifications")]
+            msent = {k[: -len(suffix)] for k in rows if k.endswith(suffix)}
+            try:
+                items = league_messages(msent, part="merged")
+            except Exception as e:  # noqa: BLE001
+                failed.append(f"{label}: {type(e).__name__}")
+                continue
+            for key, text in items:
+                try:
+                    if text is not None:
+                        if sender is send_telegram:
+                            send_telegram(text, token=token, chat_id=chat)
+                        else:
+                            sender(text, chat_id=chat)
+                except Exception as e:  # noqa: BLE001
+                    reason = _describe_error(e)
+                    failed.append(f"{label} {key}: {reason}")
+                    failures.append((100 + j, label, key, reason))     # not the owner's main chat
+                    continue
+                conn.execute("INSERT OR REPLACE INTO notifications (key, sent_at) VALUES (?, ?)",
+                             (key + suffix, now_iso()))
+                conn.commit()
+                sent.append(f"{label} {key}")
 
     result = {"sent": sent, "failed": failed}
     owner = (lambda text: sender(text)) if chats[0] is None else (lambda text: sender(text, chat_id=chats[0]))

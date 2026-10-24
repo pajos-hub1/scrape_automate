@@ -85,6 +85,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}   # dashboard/health.py reads recent run outcomes
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Separate bot for merged cross-league tickets (track/notify.py merged_bot)
+          TELEGRAM_MERGED_BOT_TOKEN_1: ${{ secrets.TELEGRAM_MERGED_BOT_TOKEN_1 }}
+          TELEGRAM_MERGED_CHAT_ID_1: ${{ secrets.TELEGRAM_MERGED_CHAT_ID_1 }}
         run: |
           set -o pipefail
           for attempt in 1 2 3; do
