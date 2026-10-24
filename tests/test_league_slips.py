@@ -256,3 +256,28 @@ def test_weekly_summary_and_bars_split(env, monkeypatch):
     merged = [dict(t, barred=True), dict(t, barred=True, won=True, returned=1500.0), dict(t, barred=False)]
     assert ln.merged_era(merged, True) == {"n": 2, "won": 1, "profit": 500.0}
     assert ln.merged_era(merged, False) == {"n": 1, "won": 0, "profit": -500.0}
+
+
+def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch):
+    import track.booking as booking
+    calls = []
+    monkeypatch.setattr(booking, "BOOKING", True)
+    monkeypatch.setattr(booking, "book_bet", lambda picks, stake=500: calls.append(picks) or f"CODE{len(calls)}")
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        _add_season(conn, 3, 3000, rounds=1)
+        _upcoming(conn, 3, 3000, 2, kickoff="2099-01-01T14:30:00Z")
+        ls.build_league(conn, 3, now=NOW)
+    text = next(t for k, t in ln.league_messages({"hello"}, connect=connect, part="leagues") if t)
+    assert "Starts 15:30 WAT" in text                                  # kickoff in WAT
+    assert text.count("📲 Booking code: <code>CODE") == 3              # one per ticket
+    assert all(3010 <= e < 3020 and k.startswith("VS_") for p in calls for e, k, _ in p)   # R2's event ids
+    n = len(calls)
+    ln.league_messages({"hello"}, connect=connect, part="leagues")     # same picks: cached, no new booking
+    assert len(calls) == n
+
+    monkeypatch.setattr(booking, "book_bet", lambda picks, stake=500: (_ for _ in ()).throw(booking.ZoomApiError("down")))
+    with connect() as conn:
+        conn.execute("DELETE FROM booking_codes")
+    text = next(t for k, t in ln.league_messages({"hello"}, connect=connect, part="leagues") if t)
+    assert "Booking code unavailable" in text                          # message still goes out

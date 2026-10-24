@@ -234,7 +234,7 @@ def _candidates(fixture_id, preds, prices, labels):
                     continue
                 won = actual == sel
             cands.append({"selection": sel, "price": price, "model_p": model[sel],
-                          "odds_p": (1 / price) / total, "won": won})
+                          "odds_p": (1 / price) / total, "won": won, "fixture_id": fixture_id})
         if cands:
             out[market] = cands
     return out

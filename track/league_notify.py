@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 from track.betslips import played, summarize
+from track.booking import code_for, code_line, slip_extras
 from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_league, league_totals, merged_tickets
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
@@ -40,9 +41,11 @@ PICK_TEXT = {
 TICKET_TITLE = {"1X2": "1X2", "HT_OU0.5": "HT Over/Under 0.5", "BTTS": "BTTS"}
 
 
-def _ticket_block(title, odds, stake, legs, market, with_flag=False):
-    """One ticket: a heading, odds/payout, then one pick per line."""
+def _ticket_block(title, odds, stake, legs, market, with_flag=False, code=None):
+    """One ticket: a heading, odds/payout, booking code, then one pick per line."""
     lines = [f"<b>━━ {html.escape(title)} ━━</b>", f"Odds {odds:,.2f} → pays <b>{_naira(stake * odds)}</b>"]
+    if code_line(code):
+        lines.append(code_line(code))
     for leg in legs:
         a, b = (_t(x) for x in leg["teams"])
         flag = (FLAGS.get(leg.get("league"), "") + " ") if with_flag else ""
@@ -72,6 +75,33 @@ def _result_line(title, won, returned, legs_won, n):
             else f"❌ {html.escape(title)} — {legs_won}/{n} picks")
 
 
+def _booking(conn, built, merged, sent, part):
+    """Booking codes (+ kickoff) for the messages about to be sent: league
+    slips going to Telegram, and merged sets not yet sent or started."""
+    extras, codes = {}, {}
+    try:
+        for cid, b in (built.items() if part in ("all", "leagues") else []):
+            if cid not in TELEGRAM_LEAGUES:
+                continue
+            for e in b:
+                r = e["round"]
+                key = f"lgslips:{cid}:{r['season'] or 'new'}:{r['number']}"
+                if r["status"] == "upcoming" and played(e["slips"]) and key not in sent:
+                    extras[key] = slip_extras(conn, e)
+        if part in ("all", "merged"):
+            now = datetime.now(timezone.utc)
+            by_hour = defaultdict(list)
+            for t in merged:
+                by_hour[t["hour"]].append(t)
+            for hour, ts in by_hour.items():
+                if f"lgm:new:{hour}" not in sent and not _kicked_off(ts, now):
+                    for t in ts:
+                        codes[t["key"]] = code_for(conn, t["legs"], stake=t["stake"])
+    except Exception as e:  # noqa: BLE001 -- codes are a bonus; never block the messages
+        print(f"   (booking codes skipped: {type(e).__name__}: {e})")
+    return extras, codes
+
+
 def league_messages(sent, connect=None, part="all"):
     """[(key, text)] for the combined messages, plus (item_key, None) entries
     marking every league round / merged hour they cover as sent.
@@ -81,6 +111,7 @@ def league_messages(sent, connect=None, part="all"):
     with (connect or get_connection)() as conn:
         built = {cid: build_league(conn, cid) for cid in LEAGUES}
         merged = merged_tickets(conn)
+        extras, merged_codes = _booking(conn, built, merged, sent, part)
 
     from track.notify import format_result, format_season_summary, format_upcoming   # lazy: notify imports this module
     out = []
@@ -100,7 +131,7 @@ def league_messages(sent, connect=None, part="all"):
             elif r["status"] == "upcoming":
                 key = f"lgslips:{cid}:{r['season'] or 'new'}:{r['number']}"
                 if key not in sent:
-                    parts.append(format_upcoming(e, league=name))
+                    parts.append(format_upcoming(e, league=name, extras=extras.get(key)))
                     keys.append(key)
         # End of a league season: one summary, like Premier's.
         for season, t in totals.items():
@@ -143,7 +174,8 @@ def league_messages(sent, connect=None, part="all"):
             for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"]))):
                 bar = MERGED_BARS[t["k"]][t["market"]]
                 parts.append(_ticket_block(f"{TICKET_TITLE[t['market']]} · top {t['k']} · picks {bar * 100:.0f}%+",
-                                           t["odds"], t["stake"], t["legs"], t["market"], with_flag=True))
+                                           t["odds"], t["stake"], t["legs"], t["market"], with_flag=True,
+                                           code=merged_codes.get(t["key"])))
             made = {(t["market"], t["k"]) for t in ts}
             skipped = [f"{TICKET_TITLE[m]} · top {k} (none reached {MERGED_BARS[k][m] * 100:.0f}%)"
                        for k in (1, 2) for m in MERGED_ORDER if (m, k) not in made]

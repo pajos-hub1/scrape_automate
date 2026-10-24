@@ -200,3 +200,54 @@ def place_in_season(ext_match_id, first_id, games_per_round, rounds_per_season):
     if 0 <= offset < rounds_per_season * games_per_round:
         return offset // games_per_round + 1, offset % games_per_round + 1
     return None
+
+
+# ---- booking codes ----------------------------------------------------------
+# The site's own "Book a Bet" call (found 2026-10-24 in its JS bundle): no
+# login, places nothing -- it returns a code anyone can load on bet9ja to
+# get the same picks in their betslip. Only event id + odds key + price are
+# needed; the response's "RIS" is the booking code.
+BOOK_URL = "https://sports.bet9ja.com/mobile/feapi/PlacebetAjax/BookABetV2"
+
+
+def raw_odds_key(market, selection):
+    """Our (market, selection) -> the sportsbook odds key: the reverse of map_odds."""
+    for family, (name, names) in _FLAT.items():
+        if name == market:
+            if names is None:
+                return f"{family}_{selection}"
+            if names == "score":
+                return f"{family}_{selection.replace('-', ':')}"
+            code = next((k for k, v in names.items() if v == selection), None)
+            return f"{family}_{code}" if code else None
+    for family, (prefix, names) in _LINES.items():
+        if market.startswith(prefix) and market[len(prefix):][:1].isdigit():
+            code = next((k for k, v in names.items() if v == selection), None)
+            return f"{family}@{market[len(prefix):]}_{code}" if code else None
+    return None
+
+
+def book_bet(picks, stake=500):
+    """picks: [(event_id, odds_key, price)] -> booking code (str). Raises ZoomApiError."""
+    import math
+    import urllib.parse
+    odds = math.prod(p for _, _, p in picks)
+    slip = {"BETS": [{"BSTYPE": 0, "TAB": 0, "NUMLINES": len(picks), "COMB": 1, "TYPE": len(picks), "STAKE": stake,
+                      "POTWINMIN": round(stake * odds, 2), "POTWINMAX": round(stake * odds, 2), "BONUSMIN": 0,
+                      "BONUSMAX": 0, "ODDMIN": odds, "ODDMAX": odds,
+                      "ODDS": {f"{e}${k}": p for e, k, p in picks}, "FIXED": {}}],
+            "IMPERSONIZE": 0}
+    body = urllib.parse.urlencode({"BETSLIP": json.dumps(slip), "IS_PASSBET": 0}).encode()
+    hdrs = {"User-Agent": USER_AGENT, "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded"}
+    try:
+        with urllib.request.urlopen(urllib.request.Request(BOOK_URL, data=body, headers=hdrs), timeout=TIMEOUT) as r:
+            raw = r.read()
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        d = json.loads(raw)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        raise ZoomApiError(f"book a bet: {e}") from e
+    if d.get("R") != "OK" or not d.get("D") or not d["D"][0].get("RIS"):
+        raise ZoomApiError(f"book a bet refused: {str(d.get('D'))[:200]}")
+    return d["D"][0]["RIS"]

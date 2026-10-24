@@ -232,6 +232,14 @@ CREATE TABLE IF NOT EXISTS lg_merged (
     created_at  TEXT NOT NULL
 );
 
+-- Bet9ja booking codes for tickets sent on Telegram (track/booking.py),
+-- one per set of picks; pruned after a couple of days.
+CREATE TABLE IF NOT EXISTS booking_codes (
+    picks       TEXT PRIMARY KEY,      -- sorted "eventId$oddKey" list, JSON
+    code        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS notify_status (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     at        TEXT NOT NULL,

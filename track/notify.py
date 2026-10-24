@@ -58,16 +58,25 @@ def _title(entry, league):
     return f"{league} · {entry['round']['label']}"
 
 
-def format_upcoming(entry, updated=False, league=PREMIER_NAME):
+def format_upcoming(entry, updated=False, league=PREMIER_NAME, extras=None):
+    """extras (track/booking.slip_extras): kickoff time + a booking code per slip."""
+    from track.booking import code_line
+    extras = extras or {}
     slips = played(entry["slips"])
     title = html.escape(_title(entry, league))
     head = (f"🔄 <b>Updated: {title} slips changed</b> "
             f"(these replace the earlier ones)\n" if updated else "")
     lines = [head + f"🎟 <b>{title}: {len(slips)} paper slips (upcoming)</b>",
-             f"{_naira(sum(s['stake'] for s in slips))} total", ""]
+             f"{_naira(sum(s['stake'] for s in slips))} total"]
+    if extras.get("kickoff"):
+        lines.append(f"⏰ <b>Starts {extras['kickoff']:%H:%M} WAT</b> — place before then")
+    lines.append("")
     for slip in slips:
         lines.append(f"<b>{html.escape(_slip_title(slip))}</b> (stake {_naira(slip['stake'])}): odds "
                      f"{slip['odds']:,.2f} → pays {_naira(slip['stake'] * slip['odds'])}")
+        code = code_line(extras.get("codes", {}).get(slip["name"]))
+        if code:
+            lines.append(code)
         for leg in slip["legs"]:
             a, b = leg["teams"]
             lines.append(f"  • {html.escape(a)} v {html.escape(b)}: "
@@ -356,12 +365,17 @@ def pending_messages(conn, built=None, suffix=""):
         round_prefix = f"slips:{_round_id(entry)}:"
         if key in sent:
             pass                                                   # this exact version already went out
-        elif any(k.startswith(round_prefix) for k in sent):
-            out.append((key, format_upcoming(entry, updated=True)))  # same round, picks changed
-        elif _legacy_upcoming_key(entry) in sent:
+        elif _legacy_upcoming_key(entry) in sent and not any(k.startswith(round_prefix) for k in sent):
             out.append((key, None))                                # sent before the key format changed
         else:
-            out.append((key, format_upcoming(entry)))
+            extras = None
+            try:
+                from track.booking import slip_extras
+                extras = slip_extras(conn, entry)
+            except Exception as e:  # noqa: BLE001 -- codes are a bonus; never block the slips
+                print(f"   (booking codes skipped: {type(e).__name__}: {e})")
+            updated = any(k.startswith(round_prefix) for k in sent)    # same round, picks changed
+            out.append((key, format_upcoming(entry, updated=updated, extras=extras)))
     return out
 
 

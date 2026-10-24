@@ -65,3 +65,10 @@ def populated(env):
         for n, (h, a) in enumerate([(2, 0), (1, 0), (0, 1), (3, 1)], start=1):
             add_played_fixture(conn, n, h, a)
     return db_path
+
+
+@pytest.fixture(autouse=True)
+def _no_booking(monkeypatch):
+    """Never call bet9ja's booking endpoint from tests (tests that need codes fake it)."""
+    import track.booking as booking
+    monkeypatch.setattr(booking, "BOOKING", False)
