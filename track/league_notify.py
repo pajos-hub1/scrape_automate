@@ -21,7 +21,7 @@ MERGED_ORDER = ["1X2", "HT_OU0.5", "BTTS"]
 # the three most profitable so far, alongside Premier). The rest are still
 # played on paper and shown on the dashboard; their messages are recorded
 # as sent without sending, so switching one on later doesn't replay a backlog.
-TELEGRAM_LEAGUES = {3, 2, 4}           # Bundesliga, Liga, Serie A
+TELEGRAM_LEAGUES = {3, 2}              # Bundesliga, Liga (Serie A dropped 2026-10-25: −₦4,142 by then)
 
 
 def _naira(v, sign=False):
