@@ -13,7 +13,8 @@ from collections import defaultdict
 
 from track.betslips import played, summarize
 from track.booking import code_for, code_line, slip_extras
-from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_league, league_totals, merged_tickets
+from track.league_slips import (FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_league, league_totals, merged_name,
+                                merged_season_bounds, merged_tickets)
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
 MERGED_ORDER = ["1X2", "HT_OU0.5", "BTTS"]
@@ -55,13 +56,6 @@ def _ticket_block(title, odds, stake, legs, market, with_flag=False, code=None):
     return "\n".join(lines)
 
 
-def merged_era(merged, barred):
-    """Settled merged tickets made with (barred=True) or before the chance bars."""
-    ts = [t for t in merged if t["settled"] and t["barred"] == barred]
-    return {"n": len(ts), "won": sum(bool(t["won"]) for t in ts),
-            "profit": sum(t["returned"] - t["stake"] for t in ts)}
-
-
 def _era_line(name, x, bold=False):
     if not x["n"]:
         return f"{name}: no set finished yet"
@@ -75,10 +69,38 @@ def _result_line(title, won, returned, legs_won, n, stake):
             else f"❌ {html.escape(title)} — {legs_won}/{n} picks ({_naira(-stake, sign=True)})")
 
 
-def merged_start(merged):
-    """Name of the first set made with the bars -- where the merged total starts."""
-    name = next((t["label"].split(" · ")[0] for t in merged if t["barred"]), None)
-    return name.replace("Premier ", "Merged ", 1) if name else None
+def merged_season_totals(merged, n):
+    """Settled tickets of merged season n."""
+    ts = [t for t in merged if t["settled"] and t.get("mseason") == n]
+    return {"n": len(ts), "won": sum(bool(t["won"]) for t in ts),
+            "profit": sum(t["returned"] - t["stake"] for t in ts), "staked": sum(t["stake"] for t in ts),
+            "sets": len({t["hour"] for t in ts}), "tickets": ts}
+
+
+def format_merged_season(merged, n):
+    """End-of-season summary for merged season n (3 days of sets)."""
+    x = merged_season_totals(merged, n)
+    start, end = (d.astimezone(WAT) for d in merged_season_bounds(n))
+    lines = [f"🏁 <b>MERGED · S{n} finished</b>",
+             f"{start:%d %b %H:%M} – {end:%d %b %H:%M} WAT · {x['sets']} sets",
+             f"Tickets won: <b>{x['won']}/{x['n']}</b>",
+             f"Staked {_naira(x['staked'])} → profit <b>{_naira(x['profit'], sign=True)}</b>"
+             + (f" ({x['profit'] / x['staked'] * 100:+.1f}%)" if x["staked"] else ""), "", "<b>By ticket</b>"]
+    by = {}
+    for t in x["tickets"]:
+        b = by.setdefault((t["k"], MERGED_ORDER.index(t["market"])), [merged_name(t), 0, 0, 0.0])
+        b[1] += 1
+        b[2] += bool(t["won"])
+        b[3] += t["returned"] - t["stake"]
+    for _, (name, n_, won, profit) in sorted(by.items()):
+        lines.append(f"{'✅' if profit > 0 else '❌'} {html.escape(name)}: {won}/{n_} won · {_naira(profit, sign=True)}")
+    wins = [t for t in x["tickets"] if t["won"]]
+    if wins:
+        best = max(wins, key=lambda t: t["returned"])
+        lines += ["", f"🏆 Best ticket: {html.escape(best['label'].split(' · ')[0].replace('Premier ', 'Merged ', 1))} · "
+                      f"{html.escape(merged_name(best))} — odds {best['odds']:,.2f}, paid {_naira(best['returned'])}"]
+    lines += ["", f"S{n + 1} starts from ₦0."]
+    return "\n".join(lines)
 
 
 def _booking(conn, built, merged, sent, part):
@@ -166,9 +188,8 @@ def league_messages(sent, connect=None, part="all"):
         for hour in list(by_hour)[:-1]:
             out += [(f"lgm:new:{hour}", None), (f"lgm:res:{hour}", None)]
             sent = sent | {f"lgm:new:{hour}", f"lgm:res:{hour}"}
-    # The running total starts at the first set made with the chance bars
-    # (user's choice 2026-10-24); earlier sets are left out of messages.
-    since_bars, start = merged_era(merged, True), merged_start(merged)
+    # Running totals are per merged season (3 days, from the first set made
+    # with the chance bars); earlier sets are left out of messages.
     now = datetime.now(timezone.utc)
     for hour, ts in by_hour.items():                      # in creation order
         key_new, key_res = f"lgm:new:{hour}", f"lgm:res:{hour}"
@@ -198,8 +219,9 @@ def league_messages(sent, connect=None, part="all"):
                                    t["legs_won"], len(t["legs"]), t["stake"])
                       for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"])))]
             lines.append(f"This set {_naira(net, sign=True)}")
-            if ts[0]["barred"]:
-                lines.append(_era_line(f"Total from {start}", since_bars, bold=True))
+            if ts[0].get("mseason"):
+                n = ts[0]["mseason"]
+                lines.append(_era_line(f"Total Merged S{n}", merged_season_totals(merged, n), bold=True))
             res_lines.append("\n".join(lines))
             res_keys.append(key_res)
 
@@ -210,6 +232,13 @@ def league_messages(sent, connect=None, part="all"):
     if res_lines:
         out.append(("lgbatch:res:" + _digest(res_keys), "📊 <b>Merged ticket results</b>\n\n" + "\n\n".join(res_lines)))
         out += [(k, None) for k in res_keys]
+    # A merged season over (its 3 days passed, every ticket settled): one summary.
+    for n in sorted({t["mseason"] for t in merged if t.get("mseason")}) if part in ("all", "merged") else []:
+        key = f"mseason:{n}"
+        if key in sent or now < merged_season_bounds(n)[1]:
+            continue
+        if all(t["settled"] for t in merged if t.get("mseason") == n):
+            out.append((key, format_merged_season(merged, n)))
     return out
 
 

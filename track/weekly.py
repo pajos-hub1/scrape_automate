@@ -7,10 +7,9 @@ import html
 from datetime import datetime, timedelta, timezone
 
 from track.betslips import build_slips, load_rounds, played
-from track.league_notify import TELEGRAM_LEAGUES, merged_era
-from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, merged_name, merged_tickets
+from track.league_notify import TELEGRAM_LEAGUES, merged_season_totals
+from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, merged_name, merged_season, merged_tickets
 
-MERGED_SEASON = "S1"        # merged tickets as they are now (with the chance bars), counted from set R6
 PREMIER_FROM_SEASON = 33     # Premier's current plan (3 top-5 tickets at ₦500) started at S33
 SEND_WEEKDAY = 6             # Sunday
 SEND_HOUR_UTC = 19           # 20:00 WAT
@@ -89,14 +88,16 @@ def format_weekly(conn, now=None):
         lines.append("Dashboard only: " + " · ".join(f"{FLAGS[cid]} {SHORT[cid]} {_naira(wk_profit[cid], sign=True)}"
                                                     for cid in others))
 
-    # Merged count from the first set made with the chance bars (earlier sets ignored).
-    wk_merged = [t for t in merged if t["settled"] and t["barred"] and (t["first_kickoff"] or t["created_at"]) >= since]
+    # Merged: this week's sets made with the chance bars, plus the current
+    # merged season's total (3-day seasons; earlier sets ignored).
+    wk_merged = [t for t in merged if t["settled"] and t.get("mseason") and (t["first_kickoff"] or t["created_at"]) >= since]
     if wk_merged:
-        x = merged_era(merged, True)
+        n = merged_season(now.isoformat(timespec="seconds")) or 1
+        x = merged_season_totals(merged, n)
         lines.append("")
-        lines.append(f"🔗 <b>MERGED · {MERGED_SEASON}</b>: <b>{_naira(sum(t['returned'] - t['stake'] for t in wk_merged), sign=True)}</b> "
-                     f"({sum(bool(t['won']) for t in wk_merged)}/{len(wk_merged)} tickets won) · "
-                     f"total {_naira(x['profit'], sign=True)}")
+        lines.append(f"🔗 <b>MERGED</b>: <b>{_naira(sum(t['returned'] - t['stake'] for t in wk_merged), sign=True)}</b> "
+                     f"this week ({sum(bool(t['won']) for t in wk_merged)}/{len(wk_merged)} tickets won) · "
+                     f"S{n} so far {_naira(x['profit'], sign=True)}")
 
     telegram_week = sum(wk_profit[cid] for cid in shown) + sum(t["returned"] - t["stake"] for t in wk_merged)
     lines += ["", f"💰 This week, everything sent on Telegram: <b>{_naira(telegram_week, sign=True)}</b>"]

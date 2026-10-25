@@ -871,7 +871,7 @@ def _render_leagues_section(conn):
     merged = merged_tickets(conn)
     by_type = {}
     for t in merged:
-        x = by_type.setdefault(("Since the bars" if t["barred"] else "Before the bars") + " · " + merged_name(t), {"n": 0, "settled": 0, "won": 0, "staked": 0.0, "returned": 0.0})
+        x = by_type.setdefault((f"S{t['mseason']}" if t.get("mseason") else "Before the bars") + " · " + merged_name(t), {"n": 0, "settled": 0, "won": 0, "staked": 0.0, "returned": 0.0})
         x["n"] += 1
         if t["settled"]:
             x["settled"] += 1
@@ -885,7 +885,9 @@ def _render_leagues_section(conn):
         return (f'<tr><td>{html.escape(n)}</td><td>{won}</td><td>{_naira(x["staked"])}</td>'
                 f'<td>{_naira(x["returned"])}</td><td class="{"hit" if profit > 0 else "miss"}">{fmt_naira(profit)}</td></tr>')
 
-    mrows = "".join(_merged_row(n, x) for n, x in sorted(by_type.items(), key=lambda kv: (not kv[0].startswith("Since"), kv[0])))
+    # Newest merged season first; sets from before the bars last.
+    season_of = lambda name: int(name.split(" ")[0][1:]) if name.startswith("S") else 0
+    mrows = "".join(_merged_row(n, x) for n, x in sorted(by_type.items(), key=lambda kv: (-season_of(kv[0]), kv[0])))
     merged_table = ('<div class="table-scroll"><table><thead><tr><th>Merged ticket</th><th>Won</th><th>Staked</th>'
                     '<th>Returned</th><th>Profit</th></tr></thead>'
                     f'<tbody>{mrows or "<tr><td colspan=5>None yet</td></tr>"}</tbody></table></div>')

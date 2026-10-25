@@ -19,7 +19,7 @@ about -31%, merged top 2 about -52% -- each pick adds bet9ja's ~5% cut.
 import json
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from db.upsert import now_iso
 from scraper.zoom_api import place_in_season
@@ -43,6 +43,27 @@ MERGED_MIN_LEAGUES = 4
 # commit 2a4cf37); earlier sets had no bar. Kept apart in every total so
 # the bars can be judged on their own.
 BARS_SINCE = "2026-10-24T12:50:00+00:00"
+# Merged "seasons" (user's choice 2026-10-25): 3 days each, counted from the
+# first set made with the bars (Merged R6, created 24 Oct 14:07 UTC). Each
+# season's money starts from ₦0 and ends with a summary on MergeBot.
+MERGED_SEASON_START = "2026-10-24T14:00:00+00:00"
+MERGED_SEASON_DAYS = 3
+
+
+def merged_season(created_at):
+    """Merged season number (1, 2, ...) for a set created then; None before the bars."""
+    if created_at < MERGED_SEASON_START:
+        return None
+    start = datetime.fromisoformat(MERGED_SEASON_START)
+    return int((datetime.fromisoformat(created_at) - start) / timedelta(days=MERGED_SEASON_DAYS)) + 1
+
+
+def merged_season_bounds(n):
+    """(start, end) of merged season n, UTC datetimes."""
+    start = datetime.fromisoformat(MERGED_SEASON_START) + timedelta(days=MERGED_SEASON_DAYS * (n - 1))
+    return start, start + timedelta(days=MERGED_SEASON_DAYS)
+
+
 MERGED_BARS = {
     1: {"1X2": 0.75, "HT_OU0.5": 0.79, "BTTS": 0.60},
     2: {"1X2": 0.70, "HT_OU0.5": 0.75, "BTTS": 0.58},
@@ -265,6 +286,7 @@ def merged_tickets(conn):
         first_kickoff = min((l["kickoff"] for l in legs if l["kickoff"]), default=None)
         out.append({"key": r["ticket_key"], "hour": r["hour"], "label": label, "first_kickoff": first_kickoff,
                     "created_at": r["created_at"], "barred": r["created_at"] >= BARS_SINCE,
+                    "mseason": merged_season(r["created_at"]),
                     "market": r["market"], "k": r["per_league"],
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
                     "won": won if settled else None, "returned": MERGED_STAKE * odds if won else 0.0,

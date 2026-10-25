@@ -252,10 +252,23 @@ def test_weekly_summary_and_bars_split(env, monkeypatch):
     assert "Dashboard only: 🇫🇷 Ligue 1" in text                   # not sent per round, still summarised
     assert "Best ticket" in text
 
-    t = {"settled": True, "won": False, "returned": 0.0, "stake": 500}
-    merged = [dict(t, barred=True), dict(t, barred=True, won=True, returned=1500.0), dict(t, barred=False)]
-    assert ln.merged_era(merged, True) == {"n": 2, "won": 1, "profit": 500.0}
-    assert ln.merged_era(merged, False) == {"n": 1, "won": 0, "profit": -500.0}
+    t = {"settled": True, "won": False, "returned": 0.0, "stake": 500, "hour": "h1"}
+    merged = [dict(t, mseason=1), dict(t, mseason=1, won=True, returned=1500.0), dict(t, mseason=None)]
+    x = ln.merged_season_totals(merged, 1)
+    assert (x["n"], x["won"], x["profit"], x["sets"]) == (2, 1, 500.0, 1)       # pre-bar ticket left out
+
+
+def test_merged_seasons_are_three_days_and_end_with_a_summary(monkeypatch):
+    assert ls.merged_season("2026-10-24T13:59:00+00:00") is None                 # before the bars
+    assert ls.merged_season("2026-10-24T14:07:14+00:00") == 1                    # Merged R6
+    assert ls.merged_season("2026-10-27T13:59:59+00:00") == 1
+    assert ls.merged_season("2026-10-27T14:00:00+00:00") == 2
+    t = {"settled": True, "won": True, "returned": 1500.0, "stake": 500, "hour": "P1R6", "mseason": 1,
+         "market": "1X2", "k": 1, "odds": 3.0, "label": "Premier R6 · from 15:35 UTC", "legs": []}
+    merged = [t, dict(t, won=False, returned=0.0, market="BTTS")]
+    text = ln.format_merged_season(merged, 1)
+    assert "MERGED · S1 finished" in text and "24 Oct 15:00 – 27 Oct 15:00 WAT" in text
+    assert "1/2" in text and "+₦500" in text and "S2 starts from ₦0" in text and "Merged R6" in text
 
 
 def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch):
