@@ -97,7 +97,7 @@ def format_merged_season(merged, n):
     wins = [t for t in x["tickets"] if t["won"]]
     if wins:
         best = max(wins, key=lambda t: t["returned"])
-        lines += ["", f"🏆 Best ticket: {html.escape(best['label'].split(' · ')[0].replace('Premier ', 'Merged ', 1))} · "
+        lines += ["", f"🏆 Best ticket: MERGED {html.escape(best['label'])} · "
                       f"{html.escape(merged_name(best))} — odds {best['odds']:,.2f}, paid {_naira(best['returned'])}"]
     lines += ["", f"S{n + 1} starts from ₦0."]
     return "\n".join(lines)
@@ -214,7 +214,7 @@ def league_messages(sent, connect=None, part="all"):
             new_keys.append(key_new)
         if key_res not in sent and all(t["settled"] for t in ts):
             net = sum(t["returned"] - t["stake"] for t in ts)
-            lines = [f"🔗 <b>Merged tickets · {html.escape(ts[0]['label'])}</b>"]
+            lines = [f"🔗 <b>{html.escape(_set_title(ts[0]))}</b>"]
             lines += [_result_line(f"{TICKET_TITLE[t['market']]} · top {t['k']}", t["won"], t["returned"],
                                    t["legs_won"], len(t["legs"]), t["stake"])
                       for t in sorted(ts, key=lambda t: (t["k"], MERGED_ORDER.index(t["market"])))]
@@ -268,6 +268,11 @@ def _hhmm(ts):
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(WAT) if ts else None
 
 
+def _set_title(t):
+    """"MERGED · S2 R4" (sets in a merged season) or the old "Merged tickets · Premier R5 · from ..."."""
+    return t.get("title") or f"Merged tickets · {t['label']}"
+
+
 def _set_header(ts):
     """'place by' (the set's first kickoff), every league's round and
     kickoff, and when the results should be in."""
@@ -280,8 +285,7 @@ def _set_header(ts):
                 per_league[l["league"]] = (l.get("round"), k)
     order = sorted(per_league.items(), key=lambda kv: (kv[1][1] is None, kv[1][1] or datetime.max.replace(tzinfo=WAT)))
     kicks = [k for _, (_, k) in order if k]
-    name = ts[0]["label"].split(" · ")[0]
-    head = f"🔗 <b>Merged tickets · {html.escape(name)}</b>"
+    head = f"🔗 <b>{html.escape(_set_title(ts[0]).split(' · from ')[0])}</b>"
     if kicks:
         head += f"\n⏰ <b>Place by {min(kicks):%H:%M} WAT</b> (first kick-off)"
     rounds = " · ".join(f"{FLAGS.get(cid, '')} {SHORT_LEAGUE.get(cid, cid)}"

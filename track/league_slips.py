@@ -291,6 +291,17 @@ def merged_tickets(conn):
                     "legs": legs, "odds": odds, "stake": MERGED_STAKE, "settled": settled,
                     "won": won if settled else None, "returned": MERGED_STAKE * odds if won else 0.0,
                     "legs_won": sum(1 for l in legs if l["won"])})
+    # Sets made in a merged season are named by it: "S2 R4" = season 2's 4th
+    # set (user's choice 2026-10-27); older sets keep their Premier-round label.
+    numbers, seen = {}, defaultdict(list)
+    for t in out:
+        if t["mseason"] and t["hour"] not in numbers:
+            seen[t["mseason"]].append(t["hour"])
+            numbers[t["hour"]] = (t["mseason"], len(seen[t["mseason"]]))
+    for t in out:
+        if t["hour"] in numbers:
+            t["label"] = "S{} R{}".format(*numbers[t["hour"]])
+        t["title"] = f"MERGED · {t['label']}" if t["hour"] in numbers else f"Merged tickets · {t['label']}"
     return out
 
 

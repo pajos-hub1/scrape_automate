@@ -1,6 +1,8 @@
 """Other-league tickets, merged tickets and their combined Telegram messages."""
 from datetime import datetime, timezone
 
+import re
+
 import pytest
 
 import track.league_notify as ln
@@ -104,7 +106,7 @@ def test_combined_message_sent_once_and_marks_every_item(env, monkeypatch):
         ls.create_merged(conn, built, now=NOW)
     connect = lambda: get_connection(env[0])
     msgs = ln.league_messages({"hello"}, connect=connect)
-    texts = [t for _, t in msgs if t and "Merged tickets" in t]
+    texts = [t for _, t in msgs if t and "merged tickets" in t.lower()]
     assert len(texts) == 1 and "1X2 · top 1" in texts[0]
     sent = {"hello"} | {k for k, _ in msgs}
     assert [t for _, t in ln.league_messages(sent, connect=connect) if t] == []                 # nothing repeated
@@ -118,7 +120,9 @@ def test_merged_sets_follow_premier_rounds_and_never_reuse_a_round(env):
             _upcoming(conn, cid, cid * 10000, 2)
         build = lambda: {cid: ls.build_slips(ls.load_league_rounds(conn, cid, now=NOW), plan_fn=plan) for cid in (1, 2, 3, 4)}
         assert len(ls.create_merged(conn, build(), now=NOW)) == 6           # set for Premier R2
-        assert {t["label"] for t in ls.merged_tickets(conn)} == {"Premier R2 · from 21:00 UTC"}
+        # Made now, so in the current merged season: named "S<n> R1", its first set.
+        assert len({t["label"] for t in ls.merged_tickets(conn)}) == 1
+        assert re.fullmatch(r"S\d+ R1", ls.merged_tickets(conn)[0]["label"])
         # Premier moves to R3 but the others still show their R2 (already used): wait, don't reuse.
         conn.execute("DELETE FROM lg_events WHERE competition_id = 1 AND ext_match_id >= 10010")
         _upcoming(conn, 1, 10000, 3)
@@ -264,11 +268,11 @@ def test_merged_seasons_are_three_days_and_end_with_a_summary(monkeypatch):
     assert ls.merged_season("2026-10-27T13:59:59+00:00") == 1
     assert ls.merged_season("2026-10-27T14:00:00+00:00") == 2
     t = {"settled": True, "won": True, "returned": 1500.0, "stake": 500, "hour": "P1R6", "mseason": 1,
-         "market": "1X2", "k": 1, "odds": 3.0, "label": "Premier R6 · from 15:35 UTC", "legs": []}
+         "market": "1X2", "k": 1, "odds": 3.0, "label": "S1 R1", "legs": []}
     merged = [t, dict(t, won=False, returned=0.0, market="BTTS")]
     text = ln.format_merged_season(merged, 1)
     assert "MERGED · S1 finished" in text and "24 Oct 15:00 – 27 Oct 15:00 WAT" in text
-    assert "1/2" in text and "+₦500" in text and "S2 starts from ₦0" in text and "Merged R6" in text
+    assert "1/2" in text and "+₦500" in text and "S2 starts from ₦0" in text and "MERGED S1 R1" in text
 
 
 def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch):
