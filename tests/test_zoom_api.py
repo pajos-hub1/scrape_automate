@@ -111,8 +111,8 @@ def test_leagues_collector(env, monkeypatch):
                                                                        "team_b": "B", "kickoff_time": "k"}])
     odds_calls = []
     monkeypatch.setattr(lg.zoom_api, "event_odds", lambda eid: odds_calls.append(eid) or
-                        {"1X2": {"Home": 1.5, "Draw": 4.0, "Away": 6.0}, "HTFT": {"1/1": 2.5}})
+                        {"1X2": {"Home": 1.5, "Draw": 4.0, "Away": 6.0}, "CORNER_1X2": {"Home": 2.5}})
     s1 = lg.collect_leagues()
     s2 = lg.collect_leagues()
-    assert s1["new_results"] == 9 and s1["new_events"] == 1 and s1["odds_rows"] == 3      # HTFT not an analysis market
+    assert s1["new_results"] == 9 and s1["new_events"] == 1 and s1["odds_rows"] == 3      # corners not an analysis market
     assert s2["new_results"] == 0 and s2["new_events"] == 0 and odds_calls == [1]         # odds captured once

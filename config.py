@@ -42,8 +42,11 @@ ROUNDS_PER_SEASON = 38
 
 # bet9ja's competition id for Premier-Zoom in its Zoom APIs (scraper/zoom_api.py).
 PREMIER_COMPETITION_ID = 1
-# Markets stored for the other-leagues analysis (lg_odds).
-LEAGUE_MARKETS = ["1X2", "BTTS", "OU1.5", "OU2.5", "HT_1X2", "HT_OU0.5", "HT_OU1.5"]
+# Markets stored for the other-leagues analysis (lg_odds). Correct score,
+# HT/FT and the extra goal lines were added 2026-10-27 for the market-
+# consistency test (do all of a game's markets come from one model?).
+LEAGUE_MARKETS = ["1X2", "BTTS", "OU1.5", "OU2.5", "HT_1X2", "HT_OU0.5", "HT_OU1.5",
+                  "CorrectScore", "HTFT", "OU3.5", "OU4.5", "HT_OU2.5"]
 MATCHES_PER_ROUND = 10
 
 MOBILE_USER_AGENT = (
