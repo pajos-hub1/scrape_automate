@@ -59,7 +59,7 @@ dashboard/               Static HTML dashboard (server-rendered SVG charts, no J
 tests/                   pytest suite, no network: the APIs are faked
 ```
 
-**Storage.** The SQLite database (`data/zoom.db.gz`), its archives and the dashboard page live on the **`data` branch**, as one snapshot commit that every run replaces; `main` holds only code. (Until 2026-11-06 every run committed the database to `main`, which grew the repo to 17 GB; that history is kept as it was.) Once the live database passes 40 MB, old settled rows move into frozen archive files under `data/archive/`. Readers query live + archived data through views, so history is never lost. GitHub Pages publishes the dashboard from `data` → `/docs`.
+**Storage.** The SQLite database (`data/zoom.db.gz`), its archives and the dashboard page live on the **`data` branch**, as one snapshot commit that every run replaces; `main` holds only code. (Until 2026-11-06 every run committed the database to `main`, which grew the repo to 17 GB; that history is kept as it was.) Once the live database passes 40 MB, old settled rows move into frozen archive files under `data/archive/`. Readers query live + archived data through views, so history is never lost. GitHub Pages publishes the dashboard from `data` → `/docs`. Each day's first snapshot is also tagged `backup-YYYY-MM-DD` (daily for 30 days, then the first of each month for good): `scripts/data_branch.sh list` shows them, `scripts/data_branch.sh restore <tag>` puts one back.
 
 ## Running it yourself
 

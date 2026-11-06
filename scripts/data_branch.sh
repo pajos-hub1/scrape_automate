@@ -7,12 +7,50 @@
 #
 #   scripts/data_branch.sh load   fetch the latest snapshot into data/ + docs/
 #   scripts/data_branch.sh save   replace the `data` branch with this snapshot
+#                                 (+ the day's backup, see below)
+#   scripts/data_branch.sh list   the backups on GitHub
+#   scripts/data_branch.sh restore backup-YYYY-MM-DD
+#                                 put that backup back as the `data` branch
+#
+# Backups: the first save of each UTC day also tags its snapshot
+# backup-YYYY-MM-DD, so an older copy survives a bug that damages the data.
+# Every daily backup is kept for 30 days; after that only the first backup
+# of each month is kept, permanently.
 #
 # Locally, `load` is all you need before `python run.py ...`.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 BRANCH=data
 MARK=.data_loaded_sha     # which snapshot this run started from (for save's lease)
+KEEP_DAYS=30
+
+days_before() {   # YYYY-MM-DD, N -> the date N days earlier (GNU or BSD date)
+  date -u -d "$1 -$2 days" +%F 2>/dev/null || date -u -j -v-"$2"d -f %F "$1" +%F
+}
+
+backup() {
+  commit=$1
+  day=${BACKUP_DAY:-$(date -u +%F)}
+  if git ls-remote --exit-code --tags origin "refs/tags/backup-$day" >/dev/null; then
+    return 0                                   # today's backup already made
+  fi
+  git push -q origin "$commit:refs/tags/backup-$day"
+  echo "Made daily backup backup-$day"
+  # Past KEEP_DAYS, keep only the first backup of each month.
+  cutoff=$(days_before "$day" "$KEEP_DAYS")
+  seen_months=" "
+  for tag in $(git ls-remote --tags origin 'refs/tags/backup-*' | awk '{print $2}' | sed 's#refs/tags/##' | sort); do
+    d=${tag#backup-}
+    month=${d:0:7}
+    if [[ "$seen_months" != *" $month "* ]]; then
+      seen_months="$seen_months$month "
+      continue                                 # the month's first backup: kept for good
+    fi
+    if [[ "$d" < "$cutoff" ]]; then
+      git push -q origin ":refs/tags/$tag" && echo "Dropped old daily backup $tag (monthly one kept)"
+    fi
+  done
+}
 
 load() {
   git fetch -q --depth=1 origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
@@ -59,10 +97,26 @@ save() {
   git push -q --force-with-lease="refs/heads/$BRANCH:$prev" origin "$commit:refs/heads/$BRANCH"
   echo "$commit" > "$MARK"
   echo "Saved data snapshot ${commit:0:7}"
+  backup "$commit" || echo "::warning::Daily backup failed (the data itself was saved)."
+}
+
+list() {
+  git ls-remote --tags origin 'refs/tags/backup-*' | awk '{print substr($1,1,7), $2}' | sed 's#refs/tags/##' | sort -k2
+}
+
+restore() {
+  tag=${1:?usage: $0 restore backup-YYYY-MM-DD}
+  git fetch -q --depth=1 origin "+refs/tags/$tag:refs/tags/$tag"
+  cur=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+  git push -q --force-with-lease="refs/heads/$BRANCH:$cur" origin "refs/tags/$tag^{commit}:refs/heads/$BRANCH"
+  echo "The data branch is now $tag ($(git rev-parse --short "refs/tags/$tag^{commit}")); it was ${cur:0:7}."
+  echo "Note: data collected after $tag is not in it -- results re-collect, older odds may not."
 }
 
 case "${1:-}" in
   load) load ;;
   save) save ;;
-  *) echo "usage: $0 load|save"; exit 2 ;;
+  list) list ;;
+  restore) restore "${2:-}" ;;
+  *) echo "usage: $0 load|save|list|restore <backup-tag>"; exit 2 ;;
 esac
