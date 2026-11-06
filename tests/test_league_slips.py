@@ -12,6 +12,15 @@ from db.connection import get_connection
 NOW = datetime(2026, 10, 23, 20, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture
+def bundesliga_on_telegram(monkeypatch):
+    """Telegram carries Premier only (2026-11-06); tests of the per-league
+    messages switch Bundesliga (3) on."""
+    import track.weekly as weekly
+    monkeypatch.setattr(ln, "TELEGRAM_LEAGUES", {3})
+    monkeypatch.setattr(weekly, "TELEGRAM_LEAGUES", {3})
+
+
 @pytest.fixture(autouse=True)
 def _no_bars(monkeypatch):
     """Tests use made-up odds; switch the chance bars off unless a test sets them."""
@@ -142,7 +151,7 @@ def test_merged_sets_follow_premier_rounds_and_never_reuse_a_round(env):
         assert len(all_ids) == len(set(all_ids))                                   # no game bet twice
 
 
-def test_league_season_summary_only_after_the_last_round(env):
+def test_league_season_summary_only_after_the_last_round(env, bundesliga_on_telegram):
     connect = lambda: get_connection(env[0])
     with connect() as conn:
         _add_season(conn, 3, 3000, rounds=33, gpr=9)              # 18-team league: 34 rounds
@@ -161,7 +170,7 @@ def test_league_season_summary_only_after_the_last_round(env):
     assert summaries(ln.league_messages({"hello"} | {k for k, _ in msgs}, connect=connect)) == []   # once
 
 
-def test_only_chosen_leagues_go_to_telegram(env):
+def test_only_chosen_leagues_go_to_telegram(env, bundesliga_on_telegram):
     connect = lambda: get_connection(env[0])
     with connect() as conn:
         for cid in (3, 5):                                         # Bundesliga is sent, Ligue 1 isn't
@@ -240,7 +249,7 @@ def test_weekly_summary_sent_sunday_evening_once_a_week():
     assert weekly_key(datetime(2026, 10, 24, 21, 0, tzinfo=timezone.utc)) is None                # Saturday
 
 
-def test_weekly_summary_and_bars_split(env, monkeypatch):
+def test_weekly_summary_and_bars_split(env, monkeypatch, bundesliga_on_telegram):
     from track.weekly import format_weekly
     connect = lambda: get_connection(env[0])
     with connect() as conn:
@@ -275,7 +284,7 @@ def test_merged_seasons_are_three_days_and_end_with_a_summary(monkeypatch):
     assert "1/2" in text and "+₦500" in text and "S2 starts from ₦0" in text and "MERGED S1 R1" in text
 
 
-def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch):
+def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch, bundesliga_on_telegram):
     import track.booking as booking
     calls = []
     monkeypatch.setattr(booking, "BOOKING", True)
@@ -298,3 +307,13 @@ def test_booking_codes_and_kickoff_on_league_slips(env, monkeypatch):
         conn.execute("DELETE FROM booking_codes")
     text = next(t for k, t in ln.league_messages({"hello"}, connect=connect, part="leagues") if t)
     assert "Booking code unavailable" in text                          # message still goes out
+
+
+def test_premier_only_by_default(env):
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        _add_season(conn, 3, 3000, rounds=1)
+        _upcoming(conn, 3, 3000, 2)
+        ls.build_league(conn, 3, now=NOW)
+    msgs = ln.league_messages({"hello"}, connect=connect, part="leagues")
+    assert [t for _, t in msgs if t] == [] and msgs                     # recorded silently, nothing sent
