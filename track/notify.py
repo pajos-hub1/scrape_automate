@@ -138,6 +138,7 @@ def format_recalc(season, entries, totals):
 
 
 WEEKLY_CUTS = True
+LEAGUE_COMPARISON = False  # Step 3 on Telegram at each Premier season end (off 2026-11-06: dashboard has it)
 WEEKLY_SUMMARY = True      # Sunday evening summary of every league (track/weekly.py)
 LEAGUE_MESSAGES = True
 
@@ -313,7 +314,9 @@ def pending_messages(conn, built=None, suffix=""):
                                                    summarize(built, season=finished_now))))
         # Step 3, every Premier season: compare all the leagues (track/league_report.py).
         key = f"step3:{finished_now}"
-        if LEAGUE_MESSAGES and key not in sent:
+        if LEAGUE_MESSAGES and key not in sent and not LEAGUE_COMPARISON:
+            out.append((key, None))            # recorded silently: switching it back on won't send old ones
+        elif LEAGUE_MESSAGES and key not in sent:
             try:
                 from track.league_report import format_comparison
                 out.append((key, format_comparison(conn, f"League comparison · after PREMIER season {finished_now}")))

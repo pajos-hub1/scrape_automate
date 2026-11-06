@@ -10,6 +10,7 @@ from track.betslips import build_slips, load_rounds, played
 from track.league_notify import TELEGRAM_LEAGUES, merged_season_totals
 from track.league_slips import FLAGS, FULL_NAMES, LEAGUES, build_league, merged_name, merged_season, merged_tickets
 
+SHOW_BACKGROUND = False      # list the background leagues' week in the summary
 PREMIER_FROM_SEASON = 33     # Premier's current plan (3 top-5 tickets at ₦500) started at S33
 SEND_WEEKDAY = 6             # Sunday
 SEND_HOUR_UTC = 19           # 20:00 WAT
@@ -83,7 +84,9 @@ def format_weekly(conn, now=None):
                          f"({won}/{n} tickets won) · total {_naira(total, sign=True)}")
         else:
             lines.append(f"{FLAGS[cid]} <b>{html.escape(FULL_NAMES[cid])}</b>: no finished rounds this week")
-    others = [cid for cid in LEAGUES if cid not in TELEGRAM_LEAGUES and week[cid]]
+    # Leagues off Telegram aren't listed here (user's choice 2026-11-06: the
+    # summary covers what Telegram carries -- Premier + merged).
+    others = [cid for cid in LEAGUES if cid not in TELEGRAM_LEAGUES and week[cid]] if SHOW_BACKGROUND else []
     if others:
         lines.append("Dashboard only: " + " · ".join(f"{FLAGS[cid]} {SHORT[cid]} {_naira(wk_profit[cid], sign=True)}"
                                                     for cid in others))
@@ -110,8 +113,8 @@ def format_weekly(conn, now=None):
         lines.append(f"🏆 Best ticket: {html.escape(name)} — odds {odds:,.2f}, paid {_naira(ret)}")
     else:
         lines.append("🏆 No ticket won this week.")
-    played_leagues = [cid for cid in rows if week[cid]]
-    if played_leagues:
+    played_leagues = [cid for cid in shown if week[cid]]
+    if len(played_leagues) > 1:            # "worst league" means nothing with one league
         worst = min(played_leagues, key=lambda c: wk_profit[c])
         if wk_profit[worst] < 0:
             lines.append(f"📉 Worst league: {FLAGS[worst]} {SHORT[worst]} {_naira(wk_profit[worst], sign=True)}")

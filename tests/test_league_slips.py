@@ -262,7 +262,7 @@ def test_weekly_summary_and_bars_split(env, monkeypatch, bundesliga_on_telegram)
                              (cid * 1000 + 10 + k, cid, cid * 1000, k + 1, "2026-10-24T10:00:00+00:00"))
         text = format_weekly(conn, now=datetime(2026, 10, 25, 19, 0, tzinfo=timezone.utc))
     assert "Weekly summary" in text and "BUNDESLIGA (GERMANY)</b>: <b>" in text
-    assert "Dashboard only: 🇫🇷 Ligue 1" in text                   # not sent per round, still summarised
+    assert "Ligue 1" not in text and "Worst league" not in text     # background leagues stay out of it
     assert "Best ticket" in text
 
     t = {"settled": True, "won": False, "returned": 0.0, "stake": 500, "hour": "h1"}
