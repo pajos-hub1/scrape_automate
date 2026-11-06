@@ -667,9 +667,21 @@ footer {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.6; }}
   <p class="section-note">Liga, Bundes, Serie A, Ligue 1, Primeira and Eredivisie each get Premier's 3 tickets
   (1X2, HT O/U 0.5, BTTS top 5, ₦500 each), staked from 2026-10-23; each league's money is per season, from ₦0.
   Merged tickets take the strongest 1 or 2 picks per market from every league's next round (including
-  Premier) into one ticket &mdash; a new set each Premier round, each league round used once. Expected from Premier's history: merged top 1 about
-  &minus;31%, merged top 2 about &minus;52% &mdash; every pick adds bet9ja's ~5% cut.</p>
+  Premier) into one ticket &mdash; a new set each Premier round, each league round used once. Every pick
+  costs bet9ja's cut (~3% for strong favourites, ~5% otherwise); the strategy tester below puts merged at
+  about &minus;12% to &minus;17% of stakes over time.</p>
   {leagues_html}
+</section>
+
+<section>
+  <h2>Strategy tester: what would a month really look like?</h2>
+  <p class="section-note">Each plan played over thousands of simulated months on a copy of Zoom's own match
+  engine (sim/): every team's fixed ratings and home advantage measured from 13,900 games' correct-score odds,
+  ~5% random adjustment per game, Poisson goals, bet9ja's ~5% cut on every price. The strongest favourites win
+  1&ndash;2 points more often than Zoom's odds say; the range shows both ends (2 points fits our real tracked
+  tickets best). Real check: our actual Premier and merged results sit at the 87th and 95th percentile of
+  the simulation &mdash; ordinary good luck. Run your own: <code>python run.py simulate --help</code>.</p>
+  {strategy_html}
 </section>
 
 <section>
@@ -846,6 +858,33 @@ def _render_running_profit(conn):
             + "".join(cards))
 
 
+def _render_strategy_section():
+    """Saved strategy-tester results (`run.py simulate --save` -> sim/results.json)."""
+    import json
+    from sim.engine import BIAS, BIAS_CAUTIOUS, RESULTS_PATH
+    if not RESULTS_PATH.exists():
+        return '<p class="empty">No saved results yet: run <code>python run.py simulate --save</code>.</p>'
+    d = json.loads(RESULTS_PATH.read_text())
+    names = {"premier": "Premier, 3 tickets a round",
+             "merged": "Merged, every set",
+             "singles": f"Singles, picks {d['threshold']:.0%}+"}
+    rows = []
+    for key, by in d["strategies"].items():
+        hi, lo = by[f"{BIAS:.2f}"], by[f"{BIAS_CAUTIOUS:.2f}"]
+        rows.append(
+            f"<tr><td>{html.escape(names.get(key, key))}</td>"
+            f'<td class="miss">{fmt_naira(hi["mean"])} to {fmt_naira(lo["mean"])}<br>'
+            f'<span class="conf">{hi["return"] * 100:+.0f}% to {lo["return"] * 100:+.0f}%</span></td>'
+            f"<td>{hi['p_profit'] * 100:.0f}%</td><td>{hi['p_ruin'] * 100:.0f}%</td>"
+            f"<td>{_naira(hi['staked'])}<br><span class=\"conf\">{hi['tickets']:,.0f} tickets</span></td>"
+            f"<td>{hi['worst_streak']:.0f}</td></tr>")
+    return (f'<p class="section-note">One {d["days"]:.0f}-day month, ₦{d["stake"]:,} a ticket, '
+            f'{d["runs"]:,} simulated months per plan.</p>'
+            '<div class="table-scroll"><table><thead><tr><th>Plan</th><th>Average month</th><th>Months in profit</th>'
+            f'<th>₦{d["budget"]:,} budget runs out</th><th>Staked a month</th><th>Longest losing run</th>'
+            f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
 def _render_leagues_section(conn):
     """Other leagues' paper tickets + merged cross-league tickets
     (track/league_slips.py)."""
@@ -955,6 +994,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         betslips_html=_render_betslips_section(built),
         cuts_html=_render_cuts_section(built),
         leagues_html=_render_leagues_section(conn),
+        strategy_html=_render_strategy_section(),
         stake_naira=STAKE_NAIRA,
         stake_breakdown=", ".join(
             f"{SLIP_MARKET_LABELS.get(k.split()[0], k)}{' ' + ' '.join(k.split()[1:]) if k.split()[0] in SLIP_MARKET_LABELS else ''}"
@@ -977,6 +1017,7 @@ SECTIONS = [
     ("Pipeline health", "Health", True),
     ("Paper betslips", "Betslips", True),
     ("Other leagues", "Leagues", True),
+    ("Strategy tester", "Strategies", True),
     ("Cut tracker", "Cut tracker", False),
     ("Accuracy by market:", "Models", False),
     ("Accuracy by market", "Accuracy", False),

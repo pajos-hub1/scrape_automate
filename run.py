@@ -376,6 +376,32 @@ def cmd_notify(args):
         marker.unlink()
 
 
+def cmd_simulate(args):
+    """Strategy tester: play a betting plan over thousands of simulated months (sim/engine.py)."""
+    import json
+    from sim import engine, ratings
+    if args.refit:
+        with get_connection() as conn:
+            ratings.save(ratings.fit_all(conn))
+        print(f"Refitted team ratings -> {ratings.RATINGS_PATH}")
+    names = ["premier", "merged", "singles"] if args.strategy == "all" else [args.strategy]
+    saved = {}
+    for name in names:
+        for bias in ([engine.BIAS, engine.BIAS_CAUTIOUS] if args.save else [args.bias]):
+            book = engine.run(name, days=args.days, runs=args.runs, stake=args.stake, budget=args.budget,
+                              threshold=args.threshold, bias=bias)
+            s = engine.summary(book, args.days)
+            label = f"{name}" + (f" (picks >= {args.threshold:.0%})" if name == "singles" else "") + \
+                    f", ₦{args.stake:,} a ticket, favourite bias {bias * 100:.0f} pt"
+            print(engine.format_summary(label, s, args.budget) + "\n")
+            saved.setdefault(name, {})[f"{bias:.2f}"] = s
+    if args.save:
+        out = {"stake": args.stake, "budget": args.budget, "days": args.days, "threshold": args.threshold,
+               "runs": args.runs, "strategies": saved}
+        engine.RESULTS_PATH.write_text(json.dumps(out, indent=1) + "\n")
+        print(f"Saved -> {engine.RESULTS_PATH} (shown on the dashboard)")
+
+
 def cmd_cycle(args):
     """The full loop: scrape -> features -> predict -> track -> archive ->
     dashboard -> notify -> pack. What the GitHub Actions run calls."""
@@ -440,6 +466,18 @@ def main():
     cycle_p = sub.add_parser("cycle", help="Run scrape -> features -> predict -> track -> archive -> dashboard -> pack")
     cycle_p.add_argument("--headed", action="store_true", help="Run Chrome with a visible window")
     cycle_p.add_argument("--browser", action="store_true", help="Use the old browser scraper instead of the APIs")
+    sim_p = sub.add_parser("simulate", help="Strategy tester: a betting plan over thousands of simulated months")
+    sim_p.add_argument("--strategy", choices=["premier", "merged", "singles", "all"], default="all")
+    sim_p.add_argument("--days", type=float, default=30)
+    sim_p.add_argument("--runs", type=int, default=2000, help="simulated histories")
+    sim_p.add_argument("--stake", type=int, default=500, help="naira per ticket")
+    sim_p.add_argument("--budget", type=int, default=20000, help="naira: how often does it run out?")
+    sim_p.add_argument("--threshold", type=float, default=0.75, help="singles: lowest chance to bet")
+    sim_p.add_argument("--bias", type=float, default=0.02, help="favourite bias (0.02 fits our real results; 0.01 cautious)")
+    sim_p.add_argument("--refit", action="store_true", help="re-measure team ratings from the DB first")
+    sim_p.add_argument("--save", action="store_true", help="run at both bias settings and save for the dashboard")
+    sim_p.set_defaults(func=cmd_simulate)
+
     leagues_p = sub.add_parser("leagues", help="Collect all Zoom leagues' results + odds (analysis only)")
     leagues_p.set_defaults(func=cmd_leagues)
     cycle_p.add_argument("--model", nargs="+", choices=list(PREDICTORS), default=DEFAULT_MODELS)

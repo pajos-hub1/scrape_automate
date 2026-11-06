@@ -1,65 +1,88 @@
-# Zoom prediction pipeline
+# Can a bookmaker's virtual football be beaten?
 
-An automated data pipeline that collects Bet9ja **Zoom** (virtual football) results and odds every 15 minutes, makes predictions, tracks them against real results, and publishes a live dashboard and Telegram updates. It runs entirely on GitHub Actions, with no server.
+A self-running data pipeline that has watched every game of Bet9ja's **Zoom** virtual football since July 2026: about 29,000 results and 1.8 million odds across 7 leagues. It predicts every round, tracks every prediction against its result, runs paper betting strategies, and publishes a live dashboard and Telegram alerts. There's no server: it all runs on GitHub Actions, every 15 minutes.
 
 **Live dashboard:** https://pajos-hub1.github.io/scrape_automate/
 
-> ⚠️ **Not betting advice.** Every "ticket" in this project is **paper only**: simulated, with no real money. The project's main finding is that **Zoom's odds can't be beaten** (see [What the data shows](#what-the-data-shows)).
+> ⚠️ **Not betting advice.** Every ticket here is **paper only**, with no real money. The answer to the title question is **no**, and the evidence is below.
 
 ---
 
-## What it does
+## What it found
+
+Over 29,000 games, these are the findings, from most to least important:
+
+**1. Zoom's odds are almost perfectly accurate.** Outcomes priced at 25% happen 25% of the time; priced at 55%, 54.4% of the time. Every trained model (form, head-to-head, league table, team history) predicted *worse* than the odds alone.
+
+**2. Zoom has a simple, fixed design, and we measured it.** From each game's correct-score odds, every game's expected goals follow one formula:
+
+```
+log(home goals) = base + home advantage + attack[home team] − defence[away team]
+log(away goals) = base                  + attack[away team] − defence[home team]
+```
+
+- **The team ratings never change.** They're the same in season 7 and season 38, and the same in round 1 and round 38. There's no form, no momentum and no table pressure: Arsenal is +0.81 every season.
+- **Home advantage is fixed:** exactly ×1.20 goals in Premier, and ×1.27–1.29 in the other six leagues.
+- **Each game also gets a small random adjustment** (~5%), which the odds already include.
+- **Goals are Poisson, and each half gets exactly half of them.**
+
+That fixed-ratings model explains 97.8% of Zoom's odds in every season.
+
+**3. That's why it can't be beaten.** Zoom prices every game straight from that engine, so a perfect copy of it reproduces Bet9ja's odds and finds nothing they missed. A full audit tested every route to an edge:
+
+| Test | Result |
+|---|---|
+| Every selection in every market (71, incl. all correct scores, HT/FT, every goal line) | none pays more than it costs |
+| Do markets disagree (correct score vs 1X2 / over-under / BTTS)? | agree to within 0.5 points |
+| Is the randomness flawed (previous game, same slot, rematch, slot, time of day, late season, games at the same moment)? | all within chance |
+| Does the engine use anything the odds ignore (form, table, points gap)? | no |
+| Value bets from our copy of the engine, on unseen seasons | −11.7% over 2,765 bets |
+
+**4. The one real crack is too small.** The strongest favourites win 1–2 points more often than their odds say. That's measurable (z ≈ 3), but it's smaller than Bet9ja's ~5% cut, so favourites still lose about 3% a pick instead of 5%.
+
+**5. What that means for a punter.** The strategy tester plays a plan over 2,000 simulated months on a copy of Zoom's engine:
+
+| Plan (₦500 a ticket) | Average month | Months in profit |
+|---|---|---|
+| Premier: 3 accumulator tickets a round | −10% to −17% | 1–8% |
+| Merged cross-league accumulators | −12% to −17% | 0% |
+| Single bets on picks with a 75%+ chance | −3% to −4% | 0–2% |
+
+The simulator is checked against reality: our actual paper results land at the 87th and 95th percentile of its range, which is ordinary good luck.
+
+## How it works
 
 Every ~15 minutes, one GitHub Actions run:
 
-1. **Collects data** from Bet9ja's own JSON APIs, the same ones its web pages use. That covers results for the current and previous season, plus upcoming games with all odds for **7 Zoom leagues**: Premier, Liga, Bundesliga, Serie A, Ligue 1, Primeira and Eredivisie.
-2. **Builds features and predictions.** The live model is odds-based, because no trained model beat the odds (details below).
-3. **Reconciles** each prediction with its result, matched exactly by Bet9ja's own game ID.
-4. **Builds paper tickets** (accumulators) per league, plus "merged" tickets combining the strongest picks across all leagues. It then tracks their profit and loss per season, starting from ₦0 each season.
-5. **Publishes**:
-   - the static **dashboard** (GitHub Pages)
-   - **Telegram** messages: new slips, results, season summaries, a weekly "cut check", and a league comparison every season
-6. **Commits** the updated database back to the repo, compressed and archived to keep commits small.
+1. **Collects** results, upcoming games and full odds for 7 leagues from Bet9ja's own JSON APIs. I found these by recording the website's network calls, and they replaced a fragile Selenium scraper (kept as an automatic fallback).
+2. **Predicts** every game. The live model is odds-based, because nothing beat the odds.
+3. **Reconciles** each prediction with its result, matched by Bet9ja's game ID.
+4. **Runs paper strategies**: per-league accumulators, plus "merged" tickets built from the strongest picks across all leagues. Each pick must clear a minimum chance ("bar"), and money is tracked per season from ₦0.
+5. **Books every ticket on Bet9ja** through the site's own "Book a Bet" call (no login, no stake), so each Telegram ticket carries a code you can load on the site.
+6. **Publishes** the dashboard (GitHub Pages) and Telegram messages. Each message is sent once, tracked in the database, with a separate bot for merged tickets.
+7. **Saves** the database and makes a daily backup.
 
-It also **looks after itself**:
-- each run starts the next one, because GitHub's own scheduler dropped about 80% of runs
-- a watchdog alerts if no new data arrives for 2 hours
-- failures are reported on Telegram and on the dashboard's health panel
+## Engineering notes
 
-## What the data shows
+The parts that took real work:
 
-Measured on tens of thousands of games and picks since July 2026:
+- **Keeping a free scheduler alive.** GitHub's cron dropped about 80% of scheduled runs. Each run now starts the next one itself, a watchdog alerts if data goes stale for 2 hours, and failures arrive on Telegram.
+- **Storage under GitHub's limits.** The SQLite database is stored gzipped. Old rows move into frozen archive files that are queried together with the live data through views. The database lives on a separate `data` branch as **one snapshot that every run replaces**, plus dated backup tags: 30 daily, then one per month kept for good. Before that change, a fresh database copy was committed every 15 minutes and the repo had grown to 17 GB.
+- **A data-loss bug, found and fully recovered.** Archive files were numbered by text order, so `zoom_archive_1000` sorted before `_997`, and every run overwrote archive 1000. I found it during an audit, fixed it, and rebuilt every lost row (about 120,000) from the 80 overwritten versions in git history, checked against everything else for duplicates.
+- **Checking my own results.** Two "discoveries" during the analysis were bugs. Duplicate rows faked a strong pattern between consecutive games, and pairing odds with results by slot number (which didn't match between the old scraper and the API) faked a +15% "edge". Both fell apart under checks, and both checks are now part of the method.
 
-| Question | Answer |
-|---|---|
-| Are Bet9ja's Zoom odds accurate? | **Yes, almost perfectly.** Outcomes priced at 25% happen 25.0% of the time, 55% → 54.4%, and so on. |
-| Can a model beat them? | **No.** Trained models (form, head-to-head, league table, team history) all scored *worse* than the odds alone. |
-| Do "sure" picks fail more than the odds say (a "trap")? | **No.** Strong picks (70%+) failed slightly *less* than expected, and no pattern (round, time, team, streak) predicts failures. |
-| Where does the money go? | A flat **~5% margin on every pick**: 0 of 52,000+ picks paid more than fair. Accumulators multiply it (a 5-pick ticket is about −20%). |
-| Do other leagues differ? | Being measured live: the dashboard's "League comparison" ranks them each season. |
-
-The pipeline keeps measuring all of this. If Bet9ja's pricing ever changed, the profit tables and the cut tracker would show it.
-
-## How it's built
+## Project layout
 
 ```
-scraper/zoom_api.py      Bet9ja JSON APIs: competitions, results, sportsbook events + odds
-scraper/*_scraper.py     Old Selenium scrapers, kept as an automatic fallback
+scraper/zoom_api.py      Bet9ja JSON APIs: results, upcoming games, odds, Book-a-Bet codes
 db/                      SQLite schema, idempotent upserts, gzip storage, archiving
-features/, predict/      Feature engineering and predictors (odds-based baseline; retired ML models kept)
-track/reconcile.py       Predictions → results, by Bet9ja game id
-track/betslips.py        Premier paper tickets, staking plans per season
-track/leagues.py         Collects every league's results + odds
-track/league_slips.py    Other-league tickets and merged cross-league tickets
-track/league_report.py   League comparison (accuracy vs odds, margin, ticket return)
-track/cuts.py            "Cut tracker": do picks fail more than the odds say?
-track/notify.py          Telegram messages (sent once each, tracked in the DB)
-dashboard/               Static HTML dashboard (server-rendered SVG charts, no JS framework)
-.github/workflows/       cycle.yml (the 15-minute pipeline), freshness.yml (watchdog), tests.yml
-tests/                   pytest suite, no network: the APIs are faked
+track/                   reconcile, paper tickets (Premier, other leagues, merged), Telegram, weekly summary
+sim/                     copy of Zoom's engine: ratings measured from odds, the strategy tester
+dashboard/               static HTML dashboard, server-rendered SVG charts, phone-friendly
+scripts/data_branch.sh   load / save / back up / restore the database on the `data` branch
+.github/workflows/       cycle.yml (every 15 min), freshness.yml (watchdog), tests.yml
+tests/                   pytest suite (90 tests), no network: the APIs are faked
 ```
-
-**Storage.** The SQLite database (`data/zoom.db.gz`), its archives and the dashboard page live on the **`data` branch**, as one snapshot commit that every run replaces; `main` holds only code. (Until 2026-11-06 every run committed the database to `main`, which grew the repo to 17 GB; that history is kept as it was.) Once the live database passes 40 MB, old settled rows move into frozen archive files under `data/archive/`. Readers query live + archived data through views, so history is never lost. GitHub Pages publishes the dashboard from `data` → `/docs`. Each day's first snapshot is also tagged `backup-YYYY-MM-DD` (daily for 30 days, then the first of each month for good): `scripts/data_branch.sh list` shows them, `scripts/data_branch.sh restore <tag>` puts one back.
 
 ## Running it yourself
 
@@ -67,22 +90,16 @@ tests/                   pytest suite, no network: the APIs are faked
 python -m venv env && source env/bin/activate
 pip install -r requirements.txt pytest
 
-scripts/data_branch.sh load  # fetch the latest database + archives from the `data` branch
+scripts/data_branch.sh load        # fetch the latest database + archives from the `data` branch
 
-python run.py cycle          # the full pipeline once: scrape → predict → track → dashboard
-python run.py track          # accuracy, profit and log-loss report in the terminal
-python run.py dashboard      # rebuild docs/index.html
-python -m pytest -q tests    # the test suite (no network needed)
+python run.py cycle                # the full pipeline once
+python run.py simulate --help      # the strategy tester: try your own plan, stake and budget
+python run.py dashboard            # rebuild docs/index.html
+python -m pytest -q tests          # the test suite
 ```
 
-`run.py --help` lists every step, including `scrape --browser` to force the old Selenium scraper.
+`run.py --help` lists every step. Telegram is optional: set the repo secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (a comma-separated list is fine; the first chat also gets failure alerts).
 
-**Telegram (optional):** add the repo secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`. The chat ID can be a comma-separated list; the first chat also gets failure alerts. Without them, messages are skipped.
+**Backups:** `scripts/data_branch.sh list` shows them; `scripts/data_branch.sh restore backup-YYYY-MM-DD` puts one back.
 
-## Clone tip
-
-`main`'s history up to 2026-11-06 includes a database snapshot every 15 minutes, so it is large. A shallow clone is much faster:
-
-```bash
-git clone --depth 1 https://github.com/pajos-hub1/scrape_automate.git
-```
+**Clone tip:** `main`'s history before 2026-11-06 contains a database copy every 15 minutes, so use a shallow clone: `git clone --depth 1 https://github.com/pajos-hub1/scrape_automate.git`
