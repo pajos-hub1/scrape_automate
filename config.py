@@ -10,7 +10,8 @@ DB_PATH = BASE_DIR / "data" / "zoom.db"
 # tables get moved into a new, frozen archive file (see db/archive.py).
 DB_GZ_PATH = DB_PATH.with_suffix(".db.gz")
 ARCHIVE_DIR = BASE_DIR / "data" / "archive"
-ARCHIVE_TRIGGER_MB = 15        # was 50; at 31 MB raw the DB committed every 15 min was ~8 MB gzipped (2026-10-23)
+ARCHIVE_TRIGGER_MB = 40        # 15 -> 40 on 2026-11-06: two days of live data (with the extra league markets)
+                               # is ~29 MB, so at 15 the archive ran every cycle, adding a file each time
 ARCHIVE_KEEP_DAYS = 2
 
 # The dashboard's per-round accuracy trend charts cover only the most

@@ -37,11 +37,16 @@ ARCHIVED_TABLES = ["odds", "predictions", "prediction_results",
 MAX_ATTACHED = 10
 
 
+def _archive_number(path):
+    return int(path.name.split("_")[-1].split(".")[0])
+
+
 def archive_files():
-    """Sorted archive .db paths, unpacking any whose .gz is newer."""
+    """Archive .db paths in NUMERIC order, unpacking any whose .gz is newer.
+    (Text order put zoom_archive_1000 before _997 -- see _next_archive_path.)"""
     if not ARCHIVE_DIR.exists():
         return []
-    paths = sorted(ARCHIVE_DIR.glob("zoom_archive_*.db.gz"))
+    paths = sorted(ARCHIVE_DIR.glob("zoom_archive_*.db.gz"), key=_archive_number)
     dbs = []
     for gz in paths:
         db = gz.with_suffix("")
@@ -89,9 +94,12 @@ def db_size_mb(conn):
 
 
 def _next_archive_path():
+    """One past the highest archive number. Numeric, never text order: text
+    order sorted _1000 before _997, so from 2026-11-03 every run "created"
+    archive 1000 again and overwrote the rows archived the run before."""
     ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
-    existing = sorted(ARCHIVE_DIR.glob("zoom_archive_*.db.gz"))
-    n = int(existing[-1].name.split("_")[-1].split(".")[0]) + 1 if existing else 1
+    existing = list(ARCHIVE_DIR.glob("zoom_archive_*.db.gz")) + list(ARCHIVE_DIR.glob("zoom_archive_*.db"))
+    n = max((_archive_number(p) for p in existing), default=0) + 1
     return ARCHIVE_DIR / f"zoom_archive_{n:03d}.db"
 
 
@@ -146,8 +154,8 @@ def archive_if_needed(conn, force=False):
         return summary
 
     path = _next_archive_path()
-    if path.exists():
-        os.remove(path)
+    if path.exists() or os.path.exists(str(path) + ".gz"):
+        raise RuntimeError(f"{path.name} already exists -- refusing to overwrite an archive")
     conn.commit()
     conn.execute("ATTACH DATABASE ? AS arc_new", (str(path),))
     try:
@@ -214,9 +222,12 @@ def archive_if_needed(conn, force=False):
     return summary
 
 
-# Merge every archive into one once there are this many -- comfortably under
-# MAX_ATTACHED, so the attach limit is never actually hit.
+# Merge the small archives into one once there are this many -- comfortably
+# under MAX_ATTACHED, so the attach limit is never actually hit. Archives
+# whose .gz is over MERGE_SKIP_MB stay frozen as they are: re-saving a big one
+# on every merge was a large part of the repo's growth (17 GB by 2026-11-06).
 MERGE_AT = 6
+MERGE_SKIP_MB = 20
 
 
 def merge_archives_if_needed(force=False, db_path=None):
@@ -231,9 +242,10 @@ def merge_archives_if_needed(force=False, db_path=None):
     from config import DB_PATH
 
     db_path = db_path or DB_PATH
-    dbs = archive_files()
-    if len(dbs) < 2 or (not force and len(dbs) < MERGE_AT):
-        return {"merged": False, "archive_files": len(dbs)}
+    every = archive_files()
+    dbs = [d for d in every if os.path.getsize(str(d) + ".gz") <= MERGE_SKIP_MB * 1024 * 1024]
+    if len(dbs) < 2 or (not force and len(every) < MERGE_AT):
+        return {"merged": False, "archive_files": len(every)}
 
     target = _next_archive_path()
     live = sqlite3.connect(str(db_path))

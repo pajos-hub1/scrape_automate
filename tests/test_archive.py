@@ -105,3 +105,21 @@ def test_merge_with_an_old_archive_that_has_no_league_tables(env):
     assert merge_archives_if_needed(force=True, db_path=db_path)["merged"]
     with get_connection(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM all_lg_matches").fetchone()[0] == 2
+
+
+def test_archive_numbers_past_999_never_overwrite(env):
+    """Text order put zoom_archive_1000 before _997, so every run re-made
+    archive 1000 and wiped the rows archived the run before (2026-11-03)."""
+    import gzip
+    import sqlite3
+
+    import db.archive as archive_mod
+    _, archive_dir = env
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    for n in (997, 998, 999, 1000):
+        db = archive_dir / f"zoom_archive_{n}.db"
+        sqlite3.connect(str(db)).close()
+        with open(db, "rb") as f, gzip.open(str(db) + ".gz", "wb") as g:
+            g.write(f.read())
+    assert archive_mod._next_archive_path().name == "zoom_archive_1001.db"
+    assert [p.name for p in archive_mod.archive_files()][-1] == "zoom_archive_1000.db"   # numeric order
