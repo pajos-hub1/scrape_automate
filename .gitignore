@@ -15,3 +15,10 @@ data/*.db
 data/archive/*.db
 *.tmp
 telegram_owner_failed
+
+# The database, archives and dashboard live on the `data` branch, not main
+# (scripts/data_branch.sh, 2026-11-06).
+data/*.gz
+data/archive/
+docs/index.html
+.data_loaded_sha

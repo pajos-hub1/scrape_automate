@@ -72,6 +72,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Load the latest data snapshot (the `data` branch)
+        run: scripts/data_branch.sh load
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -105,66 +108,16 @@ jobs:
           echo "::error::python run.py cycle failed 3 times -- see the log above for the traceback."
           exit 1
 
-      - name: Commit and push updated DB + dashboard
+      - name: Save the data snapshot (replaces the `data` branch)
+        # The DB, archives and dashboard live on the `data` branch as ONE
+        # commit that every run replaces (2026-11-06) -- committing them to
+        # main every 15 min had grown the repo to 17 GB. main keeps only code;
+        # its old history is untouched. See scripts/data_branch.sh (size
+        # guard included). The concurrency group means one run at a time.
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Only the gzipped DB + archives are tracked -- GitHub rejects any
-          # file over 100 MiB, which the raw zoom.db hit in Sept 2026 and
-          # silently failed every push for weeks. run.py cycle packs them.
-          git add data/zoom.db.gz data/archive docs/index.html
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-
-          # Size guard: GitHub rejects any file over 100 MiB, and when the
-          # old raw zoom.db crossed that the push failed with nothing but a
-          # generic "job failed" email for ~4 weeks. Fail loudly and early
-          # with the actual reason instead, and warn well before the limit.
-          for f in $(git diff --cached --name-only); do
-            [ -f "$f" ] || continue
-            size=$(stat -c %s "$f")
-            mb=$((size / 1048576))
-            if [ "$size" -ge $((90 * 1048576)) ]; then
-              echo "::error file=$f::$f is ${mb} MiB -- GitHub rejects files over 100 MiB. Archive/split it (see db/archive.py) before this can push."
-              exit 1
-            elif [ "$size" -ge $((70 * 1048576)) ]; then
-              echo "::warning file=$f::$f is ${mb} MiB, approaching GitHub's 100 MiB per-file limit."
-            fi
-          done
-
-          git commit -m "Automated cycle: $(date -u +'%Y-%m-%d %H:%M UTC')"
-
-          # The remote can move between this job's checkout and this push --
-          # e.g. someone pushing a manual code fix while this run's scrape/
-          # predict/track steps were still in flight. A bare `git push` would
-          # just fail and drop this run's update. Retry a couple times with
-          # a rebase first: data/zoom.db.gz and docs/index.html are both fully
-          # regenerated artifacts (not hand-authored diffs), so replaying
-          # this commit on top of whatever landed is always safe UNLESS the
-          # remote commit touched the *same* generated files (a real content
-          # collision, e.g. another cycle run or a manual DB backfill) -- in
-          # that case rebase can't auto-merge a binary gzip file and we
-          # give up gracefully. That's fine: this pipeline reflects current
-          # state, not history, so the next scheduled run 30ish minutes
-          # later just picks up from whatever's on the remote and continues.
-          for attempt in 1 2 3; do
-            if git push; then
-              exit 0
-            fi
-            echo "Push rejected (remote moved), attempt $attempt/3..."
-            if [ "$attempt" -lt 3 ]; then
-              git fetch origin main
-              if ! git rebase origin/main; then
-                echo "::warning::Rebase hit a real conflict (likely both sides touched data/zoom.db.gz) -- giving up, next scheduled run will continue from the remote's current state."
-                git rebase --abort
-                exit 1
-              fi
-            fi
-          done
-          echo "::error::All 3 push attempts failed -- this run's data was NOT saved."
-          exit 1
+          scripts/data_branch.sh save
 
       - name: Check Telegram reached the owner
         # Runs after the data is saved. Undelivered messages to other chats

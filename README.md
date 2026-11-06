@@ -59,13 +59,15 @@ dashboard/               Static HTML dashboard (server-rendered SVG charts, no J
 tests/                   pytest suite, no network: the APIs are faked
 ```
 
-**Storage.** The SQLite database lives in the repo as `data/zoom.db.gz`. Once it passes 15 MB, old settled rows move into frozen archive files under `data/archive/`. Readers query live + archived data through views, so history is never lost.
+**Storage.** The SQLite database (`data/zoom.db.gz`), its archives and the dashboard page live on the **`data` branch**, as one snapshot commit that every run replaces; `main` holds only code. (Until 2026-11-06 every run committed the database to `main`, which grew the repo to 17 GB; that history is kept as it was.) Once the live database passes 40 MB, old settled rows move into frozen archive files under `data/archive/`. Readers query live + archived data through views, so history is never lost. GitHub Pages publishes the dashboard from `data` → `/docs`.
 
 ## Running it yourself
 
 ```bash
 python -m venv env && source env/bin/activate
 pip install -r requirements.txt pytest
+
+scripts/data_branch.sh load  # fetch the latest database + archives from the `data` branch
 
 python run.py cycle          # the full pipeline once: scrape → predict → track → dashboard
 python run.py track          # accuracy, profit and log-loss report in the terminal
@@ -79,7 +81,7 @@ python -m pytest -q tests    # the test suite (no network needed)
 
 ## Clone tip
 
-The automation commits every 15 minutes, so the full history is large. A shallow clone is much faster:
+`main`'s history up to 2026-11-06 includes a database snapshot every 15 minutes, so it is large. A shallow clone is much faster:
 
 ```bash
 git clone --depth 1 https://github.com/pajos-hub1/scrape_automate.git
