@@ -858,6 +858,29 @@ def _render_running_profit(conn):
             + "".join(cards))
 
 
+def _render_watch_section(built):
+    """Paper-only watch list (track/watchlist.py): two single-bet rules counted from 2026-11-09."""
+    from track.watchlist import RULES, STAKE, WATCH_START, summarize, watch_bets
+    bets = watch_bets(built)
+    rows = []
+    for r in RULES:
+        s = summarize(bets[r["key"]])
+        if s["bets"]:
+            res = (f'<td>{s["won"]}/{s["bets"]} <span class="conf">({s["expected"]:.1f} expected)</span></td>'
+                   f'<td class="{"hit" if s["profit"] > 0 else "miss"}">{fmt_naira(s["profit"])}<br>'
+                   f'<span class="conf">{s["return"] * 100:+.1f}%</span></td>')
+        else:
+            res = "<td>no bets yet</td><td>&mdash;</td>"
+        rows.append(f"<tr><td>{html.escape(r['name'])}</td>{res}<td>{html.escape(r['backtest'])}</td></tr>")
+    return ("<h3>Watch list: two rules on trial (paper only)</h3>"
+            f'<p class="section-note">Single bets on Premier games, ₦{STAKE} each, counted only from {WATCH_START[:10]}. '
+            "Both looked positive in a backtest, but they were the best of ~30 rules tried and one of them lost on the "
+            "other six leagues &mdash; so they count only on games they have never seen. Roughly 200 bets are needed "
+            "before the result means anything; until then expect big swings either way.</p>"
+            '<div class="table-scroll"><table><thead><tr><th>Rule</th><th>Won since start</th><th>Profit since start</th>'
+            f'<th>Backtest (before)</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
 def _render_strategy_section():
     """Saved strategy-tester results (`run.py simulate --save` -> sim/results.json)."""
     import json
@@ -994,7 +1017,7 @@ def build_dashboard(conn, out_path=OUT_PATH):
         betslips_html=_render_betslips_section(built),
         cuts_html=_render_cuts_section(built),
         leagues_html=_render_leagues_section(conn),
-        strategy_html=_render_strategy_section(),
+        strategy_html=_render_strategy_section() + _render_watch_section(built),
         stake_naira=STAKE_NAIRA,
         stake_breakdown=", ".join(
             f"{SLIP_MARKET_LABELS.get(k.split()[0], k)}{' ' + ' '.join(k.split()[1:]) if k.split()[0] in SLIP_MARKET_LABELS else ''}"

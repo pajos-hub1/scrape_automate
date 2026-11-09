@@ -65,7 +65,8 @@ def _ticket_name(cid, row, slip):
 def format_weekly(conn, now=None):
     now = now or datetime.now(timezone.utc)
     since = (now - timedelta(days=7)).isoformat(timespec="seconds")
-    rows = league_rounds(conn)
+    premier_built = build_slips(load_rounds(conn))
+    rows = league_rounds(conn, premier_built)
     merged = merged_tickets(conn)
     first = (now - timedelta(days=7)).astimezone(WAT)
     last = now.astimezone(WAT)
@@ -101,6 +102,14 @@ def format_weekly(conn, now=None):
         lines.append(f"🔗 <b>MERGED</b>: <b>{_naira(sum(t['returned'] - t['stake'] for t in wk_merged), sign=True)}</b> "
                      f"this week ({sum(bool(t['won']) for t in wk_merged)}/{len(wk_merged)} tickets won) · "
                      f"S{n} so far {_naira(x['profit'], sign=True)}")
+
+    # Watch list (paper, pre-registered 2026-11-09): totals since it started.
+    from track.watchlist import RULES, summarize, watch_bets
+    watch = watch_bets(premier_built)
+    wl = [f"   {r['name']}: " + (f"{s['won']}/{s['bets']} won (odds expected {s['expected']:.1f}) · "
+                                  f"{_naira(s['profit'], sign=True)} ({s['return'] * 100:+.1f}%)" if s["bets"] else "no bets yet")
+          for r in RULES for s in [summarize(watch[r["key"]])]]
+    lines += ["", "🔎 <b>Watch list</b> (paper, since 9 Nov — needs ~200 bets to judge)"] + wl
 
     telegram_week = sum(wk_profit[cid] for cid in shown) + sum(t["returned"] - t["stake"] for t in wk_merged)
     lines += ["", f"💰 This week, everything sent on Telegram: <b>{_naira(telegram_week, sign=True)}</b>"]
