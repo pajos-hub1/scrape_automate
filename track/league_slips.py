@@ -64,6 +64,9 @@ def merged_season_bounds(n):
     return start, start + timedelta(days=MERGED_SEASON_DAYS)
 
 
+# Which merged tickets are made: top 1 and/or top 2 from each league. Top 2
+# dropped 2026-11-15 (user's choice): its long tickets (5-13 picks) lose far more.
+MERGED_TICKET_SIZES = (1,)
 MERGED_BARS = {
     1: {"1X2": 0.75, "HT_OU0.5": 0.79, "BTTS": 0.60},
     2: {"1X2": 0.70, "HT_OU0.5": 0.75, "BTTS": 0.58},
@@ -245,7 +248,7 @@ def create_merged(conn, built_by_league, now=None):
     for market in MERGED_MARKETS:
         if len(picks[market]) < MERGED_MIN_LEAGUES:
             continue
-        for k in (1, 2):
+        for k in MERGED_TICKET_SIZES:
             bar = MERGED_BARS[k][market]
             legs = [{"league": cid, "round": rno, "teams": list(l["teams"]), "market": market,
                      "selection": l["selection"], "price": l["price"], "odds_p": l["odds_p"],

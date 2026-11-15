@@ -13,7 +13,7 @@ from collections import defaultdict
 
 from track.betslips import played, summarize
 from track.booking import code_for, code_line, slip_extras
-from track.league_slips import (FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, build_league, league_totals, merged_name,
+from track.league_slips import (FLAGS, FULL_NAMES, LEAGUES, MERGED_BARS, MERGED_TICKET_SIZES, build_league, league_totals, merged_name,
                                 merged_season_bounds, merged_tickets)
 
 TICKETS = ["1X2 top 5", "HT_OU0.5 top 5", "BTTS top 5"]
@@ -207,7 +207,7 @@ def league_messages(sent, connect=None, part="all"):
                                            code=merged_codes.get(t["key"])))
             made = {(t["market"], t["k"]) for t in ts}
             skipped = [f"{TICKET_TITLE[m]} · top {k} (none reached {MERGED_BARS[k][m] * 100:.0f}%)"
-                       for k in (1, 2) for m in MERGED_ORDER if (m, k) not in made]
+                       for k in MERGED_TICKET_SIZES for m in MERGED_ORDER if (m, k) not in made]
             if skipped:
                 parts.append("<i>No ticket this time: " + html.escape("; ".join(skipped)) + "</i>")
             new_blocks.append("\n\n".join(parts))

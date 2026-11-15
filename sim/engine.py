@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from sim import ratings as R
-from track.league_slips import MERGED_BARS, MERGED_MIN_LEAGUES
+from track.league_slips import MERGED_BARS, MERGED_MIN_LEAGUES, MERGED_TICKET_SIZES
 
 from pathlib import Path
 
@@ -180,7 +180,7 @@ def run(strategy, days=30, runs=2000, stake=500, budget=20000, seed=1, threshold
             if len(top5) < MERGED_MIN_LEAGUES:
                 continue
             for m in MARKETS:
-                for k in (1, 2):
+                for k in MERGED_TICKET_SIZES:
                     bar = MERGED_BARS[k][m]
                     p = np.concatenate([top5[c][m][0][:, :k] for c in top5], axis=1)
                     price = np.concatenate([top5[c][m][1][:, :k] for c in top5], axis=1)

@@ -73,7 +73,7 @@ def test_money_starts_at_the_round_upcoming_at_switch_on(env):
         assert totals[1000]["rounds"] == 1 and totals[1000]["slips"] == 3 and totals[1000]["staked"] == 1500
 
 
-def test_merged_tickets_once_per_round_and_settled_from_results(env):
+def test_merged_tickets_once_per_round_and_settled_from_results(env, both_merged_sizes):
     with get_connection(env[0]) as conn:
         for cid in (1, 2, 3, 4):
             _add_season(conn, cid, cid * 10000, rounds=1)
@@ -121,7 +121,7 @@ def test_combined_message_sent_once_and_marks_every_item(env, monkeypatch):
     assert [t for _, t in ln.league_messages(sent, connect=connect) if t] == []                 # nothing repeated
 
 
-def test_merged_sets_follow_premier_rounds_and_never_reuse_a_round(env):
+def test_merged_sets_follow_premier_rounds_and_never_reuse_a_round(env, both_merged_sizes):
     plan = lambda s: ls.LEAGUE_PLAN
     with get_connection(env[0]) as conn:
         for cid in (1, 2, 3, 4):
@@ -317,3 +317,15 @@ def test_premier_only_by_default(env):
         ls.build_league(conn, 3, now=NOW)
     msgs = ln.league_messages({"hello"}, connect=connect, part="leagues")
     assert [t for _, t in msgs if t] == [] and msgs                     # recorded silently, nothing sent
+
+
+def test_merged_is_top_1_only_by_default(env):
+    connect = lambda: get_connection(env[0])
+    with connect() as conn:
+        for cid in (1, 2, 3, 4):
+            _add_season(conn, cid, cid * 10000, rounds=1)
+            _upcoming(conn, cid, cid * 10000, 2)
+        built = {cid: ls.build_slips(ls.load_league_rounds(conn, cid, now=NOW), plan_fn=lambda s: ls.LEAGUE_PLAN)
+                 for cid in (1, 2, 3, 4)}
+        keys = ls.create_merged(conn, built, now=NOW)
+    assert len(keys) == 3 and all(k.endswith("|1") for k in keys)          # 1X2 / HT / BTTS, top 1 each

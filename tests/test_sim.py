@@ -42,6 +42,7 @@ def test_strategies_place_the_expected_tickets():
     book = E.run("premier", days=1, runs=50)
     assert np.all(book.tickets == 3 * E.ROUNDS_PER_DAY)                     # 3 tickets every round
     book = E.run("merged", days=1, runs=50)
-    assert (book.tickets <= 6 * round(E.MERGED_SETS_PER_DAY)).all() and book.tickets.mean() > 3 * E.MERGED_SETS_PER_DAY
+    most = 3 * len(E.MERGED_TICKET_SIZES) * round(E.MERGED_SETS_PER_DAY)
+    assert (book.tickets <= most).all() and book.tickets.mean() > 0.5 * most
     s = E.summary(E.run("singles", days=1, runs=50, threshold=0.75), 1)
     assert s["win_rate"] > 0.75

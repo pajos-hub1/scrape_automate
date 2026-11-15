@@ -72,3 +72,22 @@ def _no_booking(monkeypatch):
     """Never call bet9ja's booking endpoint from tests (tests that need codes fake it)."""
     import track.booking as booking
     monkeypatch.setattr(booking, "BOOKING", False)
+
+
+@pytest.fixture
+def both_merged_sizes(monkeypatch):
+    """Merged tickets are top 1 only since 2026-11-15; tests of how sets are
+    built still check top 1 AND top 2."""
+    import sim.engine as engine
+    import track.league_notify as ln
+    import track.league_slips as ls
+    for mod in (ls, ln, engine):
+        monkeypatch.setattr(mod, "MERGED_TICKET_SIZES", (1, 2))
+
+
+@pytest.fixture(autouse=True)
+def _no_sunday_summary(monkeypatch):
+    """The weekly summary is due on Sunday evenings by the REAL clock; keep it
+    out of other tests (it has its own tests in test_league_slips.py)."""
+    import track.notify as notify
+    monkeypatch.setattr(notify, "WEEKLY_SUMMARY", False)
