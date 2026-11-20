@@ -1,0 +1,60 @@
+name: Football odds collector (fb_tracker)
+
+# Feasibility check for arbitrage on real football (2026-11-20): a snapshot of
+# Bet9ja and SportyBet pre-match odds every 10 minutes. No betting -- it only
+# reads odds. Data goes to the `fb-data` branch (fb_tracker/data_branch.sh),
+# never to main and never near the Zoom `data` branch.
+#
+# One run loops for ~5.5 hours, saving after every snapshot, then starts the
+# next run itself (GitHub's own scheduler drops most runs -- see cycle.yml).
+# The schedule below only restarts the chain if it ever breaks.
+# To stop: set repo variable FB_COLLECT=off, or disable this workflow.
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: fb-collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    if: vars.FB_COLLECT != 'off'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Load the collector's database
+        run: fb_tracker/data_branch.sh load
+
+      - name: Collect a snapshot every 10 minutes for ~5.5 hours (saving after each)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          python -m fb_tracker.collect --loop 320 --every 10 --after "fb_tracker/data_branch.sh save"
+
+      - name: Feasibility report so far
+        if: always()
+        run: python -m fb_tracker.report || true
+
+      - name: Start the next run
+        if: always() && vars.FB_COLLECT != 'off'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -s -o /dev/null -w "dispatch HTTP %{http_code}\n" -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/fb_collect.yml/dispatches" \
+            -d '{"ref":"main"}'

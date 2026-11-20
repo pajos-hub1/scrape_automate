@@ -22,3 +22,6 @@ data/*.gz
 data/archive/
 docs/index.html
 .data_loaded_sha
+
+# fb_tracker data lives on the fb-data branch
+fb_tracker/data/
